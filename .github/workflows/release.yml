@@ -1,0 +1,199 @@
+name: Release
+
+# Triggered manually. Tags the current commit, cross-compiles all platform
+# gems, creates a GitHub Release with changelog and gems, publishes to RubyGems.
+on:
+  workflow_dispatch:
+
+jobs:
+  # Read version from version.rb, create git tag
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read version and create tag
+        id: tag
+        run: |
+          VERSION=$(ruby -e "require_relative 'lib/carbon_fiber/version'; print CarbonFiber::VERSION")
+          TAG="v${VERSION}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${TAG}"
+          git push origin "${TAG}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+  # Linux: cross-compile x86_64 and aarch64 inside RCD Docker containers
+  linux:
+    needs: tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: true
+
+      - name: Cross-compile Linux targets
+        run: bundle exec rake cross:linux:all
+
+      - name: Build Linux platform gems
+        run: bundle exec rake gem:x86_64-linux gem:aarch64-linux
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gems-linux
+          path: pkg/*.gem
+
+  # macOS: native builds for arm64 and x86_64, each with multiple Ruby versions
+  macos:
+    needs: tag
+    strategy:
+      matrix:
+        include:
+          - { os: macos-latest, gem_platform: arm64-darwin }
+          - { os: macos-13, gem_platform: x86_64-darwin }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+
+      - name: Install Zig
+        run: |
+          ZIG_ARCH=$(uname -m | sed 's/arm64/aarch64/')
+          ZIG_VERSION="0.15.2"
+          curl -sSfL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ZIG_ARCH}-macos-${ZIG_VERSION}.tar.xz" \
+            | tar xJ -C /tmp
+          echo "/tmp/zig-${ZIG_ARCH}-macos-${ZIG_VERSION}" >> $GITHUB_PATH
+
+      - name: Fetch Zig dependencies
+        run: zig build --fetch
+
+      # Compile under each Ruby version. setup-ruby replaces the Ruby on PATH;
+      # rake compile builds a .bundle for whichever Ruby is current.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+
+      - name: Compile for Ruby 3.4
+        run: bundle exec rake compile
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: true
+
+      - name: Compile for Ruby 4.0
+        run: bundle exec rake compile
+
+      - name: Build platform gem
+        run: bundle exec rake gem:${{ matrix.gem_platform }}
+
+      - name: Smoke-test installed gem
+        run: |
+          gem install pkg/carbon_fiber-*-${{ matrix.gem_platform }}.gem
+          ruby -e '
+            require "carbon_fiber"
+            puts "backend: #{CarbonFiber::Native.backend}"
+            results = []
+            Fiber.set_scheduler(CarbonFiber::Scheduler.new)
+            3.times { |i| Fiber.schedule { sleep 0.01; results << i } }
+            Fiber.scheduler.close
+            raise "expected 3 fibers, got #{results.size}" unless results.size == 3
+            puts "smoke test passed"
+          '
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gems-${{ matrix.gem_platform }}
+          path: pkg/*.gem
+
+  # Source gem: pure Ruby, works on all platforms without native extension
+  source:
+    needs: tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: true
+
+      - name: Build source gem
+        run: bundle exec rake gem:source
+
+      - name: Smoke-test installed gem
+        run: |
+          gem install pkg/carbon_fiber-*.gem --ignore-dependencies
+          ruby -e '
+            require "carbon_fiber"
+            puts "backend: #{CarbonFiber::Native.backend}"
+            results = []
+            Fiber.set_scheduler(CarbonFiber::Scheduler.new)
+            3.times { |i| Fiber.schedule { sleep 0.01; results << i } }
+            Fiber.scheduler.close
+            raise "expected 3 fibers, got #{results.size}" unless results.size == 3
+            puts "smoke test passed"
+          '
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gems-source
+          path: pkg/*.gem
+
+  # Publish: GitHub Release (with gems + changelog) + RubyGems
+  publish:
+    needs: [tag, linux, macos, source]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: true
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: gems-*
+          path: pkg
+          merge-multiple: true
+
+      - name: Extract changelog for this version
+        run: |
+          VERSION="${{ needs.tag.outputs.version }}"
+          awk "/^## \[${VERSION}\]/{found=1; next} /^## \[/{if(found) exit} found{print}" \
+            CHANGELOG.md > /tmp/release_notes.md
+          cat /tmp/release_notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ needs.tag.outputs.tag }}" \
+            --title "Carbon Fiber ${{ needs.tag.outputs.version }}" \
+            --notes-file /tmp/release_notes.md \
+            pkg/*.gem
+
+      - name: Push to RubyGems
+        uses: rubygems/release-gem@v1

@@ -1,0 +1,43 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Profile a core workload with StackProf.
+# Usage: profile_core <target> <workload>
+# Output: prints top frames to stdout; writes dump to /tmp/stackprof-<target>-<workload>.dump
+
+require "stackprof"
+require_relative "lib/bench"
+
+target_id = ARGV[0] or abort("usage: profile_core <target> <workload>")
+workload_id = ARGV[1] or abort("usage: profile_core <target> <workload>")
+
+target = Bench::TARGETS.fetch(target_id)
+workload_def = Bench::WORKLOADS.fetch(workload_id)
+
+if (gem_home = ENV["BENCH_GEM_HOME"])
+  target_home = File.join(gem_home, target_id)
+  if Dir.exist?(target_home)
+    ENV["GEM_HOME"] = target_home
+    ENV["GEM_PATH"] = target_home
+    Gem.clear_paths
+  end
+end
+
+target[:require_proc].call
+require_relative "lib/bench/workloads/#{workload_id}"
+
+scheduler_class = Bench.constantize(target[:constant])
+scheduler = scheduler_class.new
+Fiber.set_scheduler(scheduler)
+
+workload_class = Bench::Workloads.const_get(Bench.classify(workload_id))
+
+dump_path = "/tmp/stackprof-#{target_id}-#{workload_id}.dump"
+StackProf.run(mode: :wall, interval: 200, out: dump_path) do
+  result = workload_class.new.call(scheduler, workload_def[:defaults])
+  puts "#{target_id}/#{workload_id}: #{result[workload_def[:metric]]}"
+end
+
+report = StackProf::Report.new(Marshal.load(File.binread(dump_path)))
+puts "== top 15 =="
+report.print_text(sort_by: :samples, max: 15)

@@ -1,0 +1,7 @@
+ignore:
+  - "benchmarks/.gems/**/*"
+  - "tmp/**/*"
+  - "target/**/*"
+  - "**/*":
+    - Style/InfiniteLoop
+    - Lint/ShadowedException

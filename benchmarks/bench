@@ -1,0 +1,279 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Benchmark orchestrator: runs workloads across targets, prints ASCII table.
+#
+# Usage:
+#   bench -t carbon,async -w tcp_echo,http_server      # specific targets + workloads
+#   bench -t carbon,async                                # all workloads
+#   bench -t carbon -w tcp_echo -r 3                     # 3 runs, median
+#   bench --setup                                      # install target gems
+#
+# Environment:
+#   BENCH_GEM_HOME  — per-target gem install root (set by core_docker)
+#   BENCH_TIMEOUT   — per-workload timeout in seconds (default: 15)
+
+require "optparse"
+require "timeout"
+require "rbconfig"
+require "fileutils"
+require_relative "lib/bench"
+
+# --- CLI ---
+
+targets = nil
+workloads = nil
+runs = 1
+timeout = Integer(ENV.fetch("BENCH_TIMEOUT", 15))
+setup = false
+
+OptionParser.new do |opts|
+  opts.banner = "Usage: bench [options]"
+  opts.on("-t", "--targets LIST", "Comma-separated target IDs") { |v| targets = v.split(",") }
+  opts.on("-w", "--workloads LIST", "Comma-separated workload IDs") { |v| workloads = v.split(",") }
+  opts.on("-r", "--runs N", Integer, "Number of runs per combo (default: 1)") { |v| runs = v }
+  opts.on("--timeout N", Integer, "Per-workload timeout in seconds (default: 15)") { |v| timeout = v }
+  opts.on("--setup", "Install target gems and exit") { setup = true }
+end.parse!
+
+targets ||= Bench::TARGETS.keys
+# Default to the core workload set (scheduler-sensitive rows).  Workloads
+# excluded from `CORE_WORKLOADS` are still runnable via `-w <name>` — see
+# the comment next to `CORE_WORKLOADS` in `lib/bench.rb` for why they're
+# not in the default.
+workloads ||= Bench::CORE_WORKLOADS.keys
+
+# Validate against the full registry so opt-in workloads (dns_fanout,
+# websocket_idle, mixed_io_sizes) still work with `-w`.
+targets.each { |t| Bench::TARGETS.key?(t) or abort("unknown target: #{t}") }
+workloads.each { |w| Bench::WORKLOADS.key?(w) or abort("unknown workload: #{w}") }
+
+# --- Resolve per-target Ruby binary ---
+
+MISE_SEARCH_PATHS = %w[
+  /opt/homebrew/opt/mise/bin/mise
+  /opt/homebrew/bin/mise
+].freeze
+
+def find_mise
+  # Check PATH first
+  path = ENV["PATH"].to_s.split(File::PATH_SEPARATOR).find do |dir|
+    File.executable?(File.join(dir, "mise"))
+  end
+  return File.join(path, "mise") if path
+
+  MISE_SEARCH_PATHS.find { |p| File.executable?(p) }
+end
+
+def resolve_ruby(version)
+  return RbConfig.ruby if RUBY_VERSION.start_with?(version)
+
+  mise = find_mise
+  return nil unless mise
+
+  path = `#{mise} where ruby #{version} 2>/dev/null`.strip
+  if $?.success? && !path.empty?
+    bin = File.join(path, "bin", "ruby")
+    return bin if File.executable?(bin)
+  end
+
+  nil
+end
+
+# When running under system Ruby (e.g. macOS 2.6), find mise's default Ruby
+def default_ruby
+  return RbConfig.ruby if RUBY_VERSION.to_f >= 3.0
+
+  mise = find_mise
+  if mise
+    # Try latest installed Ruby via mise
+    path = `#{mise} where ruby 2>/dev/null`.strip
+    if $?.success? && !path.empty?
+      bin = File.join(path, "bin", "ruby")
+      return bin if File.executable?(bin)
+    end
+  end
+
+  RbConfig.ruby
+end
+
+DEFAULT_RUBY = default_ruby
+
+def ruby_for_target(target_info, cache)
+  version = target_info[:ruby]
+  return DEFAULT_RUBY unless version
+
+  cache[version] ||= resolve_ruby(version) || begin
+    warn "WARN: Ruby #{version} not found, using #{RUBY_VERSION}"
+    DEFAULT_RUBY
+  end
+end
+
+# --- Setup (gem install) ---
+
+if setup
+  gem_home = ENV["BENCH_GEM_HOME"] || File.join(__dir__, ".gems")
+  ruby_cache = {}
+
+  targets.each do |t|
+    info = Bench::TARGETS[t]
+    next unless info[:gems]
+
+    target_home = File.join(gem_home, t)
+    FileUtils.mkdir_p(target_home)
+
+    target_ruby = ruby_for_target(info, ruby_cache)
+    gem_bin = File.join(File.dirname(target_ruby), "gem")
+    gem_bin = "gem" unless File.executable?(gem_bin)
+    ruby_label = info[:ruby] ? " (ruby #{info[:ruby]})" : ""
+
+    info[:gems].each do |name, version|
+      cmd = [gem_bin, "install", name, "--install-dir", target_home, "--no-document"]
+      cmd += ["-v", version] if version
+      warn "  installing #{name}#{" #{version}" if version}#{ruby_label} → #{target_home}"
+      system(*cmd) or warn("  WARN: gem install #{name} failed")
+    end
+  end
+  exit 0
+end
+
+# --- Run benchmarks ---
+
+bench_one = File.join(__dir__, "bench_one")
+ruby_cache = {}
+gem_home = ENV["BENCH_GEM_HOME"] || File.join(__dir__, ".gems")
+results = {}  # { [target, workload] => [values] | :error | :timeout }
+
+warn "Running #{targets.size} target(s) × #{workloads.size} workload(s) × #{runs} run(s)"
+warn ""
+
+runs.times do |run|
+  $stderr.print "Run #{run + 1}/#{runs}: " if runs > 1
+  targets.each do |t|
+    workloads.each do |w|
+      $stderr.print "#{t}/#{w} "
+
+      rd, wr = IO.pipe
+      target_ruby = ruby_for_target(Bench::TARGETS[t], ruby_cache)
+      env = {"BENCH_GEM_HOME" => gem_home}
+      pid = Process.spawn(env, target_ruby, bench_one, t, w, out: wr, err: "/dev/null")
+      wr.close
+
+      begin
+        Timeout.timeout(timeout) { Process.wait(pid) }
+        if $?.success?
+          value = rd.read.strip.to_f
+          results[[t, w]] = [] unless results[[t, w]].is_a?(Array)
+          results[[t, w]] << value
+        else
+          results[[t, w]] ||= :error
+        end
+      rescue Timeout::Error
+        Process.kill("KILL", pid)
+        Process.wait(pid)
+        results[[t, w]] ||= :timeout
+      ensure
+        rd.close
+      end
+    end
+  end
+  $stderr.puts
+end
+
+# --- Compute medians ---
+
+medians = {}
+results.each do |key, val|
+  medians[key] = if val.is_a?(Array) && !val.empty?
+    sorted = val.sort
+    sorted[sorted.size / 2]
+  else
+    val  # :error or :timeout
+  end
+end
+
+# --- Print markdown table ---
+
+def format_cell(value, unit)
+  return "error" if value == :error
+  return "timeout" if value == :timeout
+
+  "#{Bench.fmt(value)} #{unit}"
+end
+
+def format_delta(baseline, current)
+  return "" if !baseline.is_a?(Numeric) || !current.is_a?(Numeric) || baseline.zero?
+
+  pct = ((current - baseline) / baseline.abs) * 100
+  sign = (pct >= 0) ? "+" : ""
+  "#{sign}#{format("%.1f", pct)}%"
+end
+
+# Find best (highest numeric) result per workload for bolding
+best_per_workload = {}
+workloads.each do |w|
+  best_val = nil
+  best_target = nil
+  targets.each do |t|
+    v = medians[[t, w]]
+    next unless v.is_a?(Numeric) && v > 0
+    if best_val.nil? || v > best_val
+      best_val = v
+      best_target = t
+    end
+  end
+  best_per_workload[w] = best_target
+end
+
+# Build cell grid (with bold markers) before measuring widths
+show_delta = targets.size == 2
+cells = {}
+workloads.each do |w|
+  unit = Bench::WORKLOADS[w][:unit]
+  targets.each do |t|
+    cell = format_cell(medians[[t, w]], unit)
+    cell = "**#{cell}**" if t == best_per_workload[w]
+    cells[[t, w]] = cell
+  end
+end
+
+workload_width = [8, *workloads.map(&:size)].max
+col_widths = targets.map do |t|
+  values = workloads.map { |w| cells[[t, w]] }
+  [t.size, *values.map(&:size)].max
+end
+delta_width = 0
+
+if show_delta
+  deltas = workloads.map do |w|
+    format_delta(medians[[targets[0], w]], medians[[targets[1], w]])
+  end
+  delta_width = [5, *deltas.map(&:size)].max
+end
+
+# Build border/separator line
+sep = "|-#{"-" * workload_width}-|"
+targets.each_with_index { |_, i| sep += "-#{"-" * col_widths[i]}-|" }
+sep += "-#{"-" * delta_width}-|" if show_delta
+
+# Header
+puts sep
+header = "| #{format("%-#{workload_width}s", "workload")} |"
+targets.each_with_index { |t, i| header += " #{t.rjust(col_widths[i])} |" }
+header += " #{"delta".rjust(delta_width)} |" if show_delta
+puts header
+puts sep
+
+# Data rows
+workloads.each do |w|
+  row = "| #{format("%-#{workload_width}s", w)} |"
+  targets.each_with_index { |t, i| row += " #{cells[[t, w]].rjust(col_widths[i])} |" }
+
+  if show_delta
+    delta = format_delta(medians[[targets[0], w]], medians[[targets[1], w]])
+    row += " #{delta.rjust(delta_width)} |"
+  end
+
+  puts row
+end
+puts sep

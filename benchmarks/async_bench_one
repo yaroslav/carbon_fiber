@@ -1,0 +1,38 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Worker subprocess: loads one Async backend, runs one workload, prints the metric.
+# Called by `async_bench` orchestrator.
+#
+# Usage: async_bench_one <target> <workload>
+
+require_relative "lib/async_bench"
+
+target_id = ARGV[0] or abort("usage: async_bench_one <target> <workload>")
+workload_id = ARGV[1] or abort("usage: async_bench_one <target> <workload>")
+
+target = AsyncBench::TARGETS.fetch(target_id) { abort("unknown target: #{target_id}") }
+workload_def = AsyncBench::WORKLOADS.fetch(workload_id) { abort("unknown workload: #{workload_id}") }
+
+# Set up gem path for async
+gem_home = ENV["BENCH_GEM_HOME"] || File.join(__dir__, ".gems")
+async_home = File.join(gem_home, "async")
+if Dir.exist?(async_home)
+  ENV["GEM_HOME"] = async_home
+  ENV["GEM_PATH"] = async_home
+  Gem.clear_paths
+end
+
+# Target setup (carbon installs our selector before requiring async)
+target[:setup].call
+require "async"
+
+require_relative "lib/async_bench/workloads/#{workload_id}"
+
+workload_class = AsyncBench::Workloads.const_get(AsyncBench.classify(workload_id))
+Thread.handle_interrupt(Errno::EINTR => :never) do
+  result = workload_class.new.call(workload_def[:defaults])
+  $stdout.puts result[workload_def[:metric]]
+  $stdout.flush
+  exit!(0)
+end

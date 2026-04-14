@@ -1,0 +1,52 @@
+# macOS / editor junk
+.DS_Store
+*.swp
+*.swo
+*~
+.claude/
+.ruby-lsp/
+
+# Ruby local state
+/.bundle/
+/coverage/
+/log/
+/vendor/bundle/
+
+# Temporary / cache
+/tmp/
+/.cache/
+**/.cache/
+
+# Zig build output
+/zig-cache/
+/.zig-cache/
+/zig-out/
+**/zig-cache/
+**/.zig-cache/
+**/zig-out/
+
+# Benchmark gem installs
+/benchmarks/.gems/
+
+# Native binaries and objects
+*.o
+*.a
+*.so
+*.bundle
+*.dylib
+*.dll
+*.exe
+*.out
+*.class
+*.dSYM/
+
+# Profiling / logs
+*.log
+*.profraw
+*.profdata
+/pkg/
+/.zig-install/
+
+# Auto-generated documentation
+/doc/
+.yardoc

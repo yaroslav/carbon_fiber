@@ -1,0 +1,10 @@
+--no-private
+--protected
+--embed-mixins
+--markup markdown
+--title "Carbon Fiber"
+--readme README.md
+lib/**/*.rb
+-
+LICENSE
+CHANGELOG.md

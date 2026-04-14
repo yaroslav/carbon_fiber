@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Run async benchmarks in a Docker container (io_uring).
+#
+# Usage:
+#   benchmarks/async_docker                                  # all targets, all workloads
+#   benchmarks/async_docker -t stock,carbon -w task_churn   # specific
+#   benchmarks/async_docker -r 3                            # 3 runs, median
+#
+# All arguments are forwarded to `benchmarks/async_bench` inside the container.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+command -v docker >/dev/null 2>&1 || { echo "error: docker not found in PATH" >&2; exit 1; }
+
+docker build -t carbon-fiber-bench -f "${ROOT}/benchmarks/Dockerfile" "${ROOT}"
+
+docker run --rm \
+  --security-opt seccomp=unconfined \
+  --ulimit memlock=-1 \
+  -v "${ROOT}:/workspace" \
+  -w /workspace \
+  -e BENCH_GEM_HOME=/workspace/tmp/linux_gems \
+  -e RUBYOPT=--yjit \
+  carbon-fiber-bench \
+  bash -c '
+    bundle install --quiet &&
+    zig build -Doptimize=ReleaseFast &&
+    gem install async --install-dir /workspace/tmp/linux_gems/async --no-document &&
+    ruby ./benchmarks/async_bench "$@"
+  ' -- "$@"

@@ -1,0 +1,46 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  ruby: "3.4" }
+          - { os: ubuntu-latest,  ruby: "4.0" }
+          - { os: macos-latest,   ruby: "3.4" }
+          - { os: macos-latest,   ruby: "4.0" }
+          - { os: windows-latest, ruby: "4.0" }
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Zig
+        if: runner.os != 'Windows'
+        run: |
+          ZIG_VERSION="0.15.2"
+          ZIG_ARCH=$(uname -m | sed 's/arm64/aarch64/')
+          ZIG_OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+          curl -sSfL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ZIG_ARCH}-${ZIG_OS}-${ZIG_VERSION}.tar.xz" \
+            | tar xJ -C /tmp
+          echo "/tmp/zig-${ZIG_ARCH}-${ZIG_OS}-${ZIG_VERSION}" >> $GITHUB_PATH
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+
+      - name: Build native extension
+        if: runner.os != 'Windows'
+        run: bundle exec rake compile
+
+      - name: Run specs
+        run: bundle exec rake spec
+        env:
+          CARBON_FIBER_FORCE_FALLBACK: ${{ runner.os == 'Windows' && '1' || '' }}

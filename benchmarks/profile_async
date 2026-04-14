@@ -1,0 +1,72 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Profile an async bench workload with StackProf.
+# Usage: profile_async <target> <workload>
+#   target: stock | carbon
+# Output: dump to /tmp/stackprof-async-<target>-<workload>.dump
+
+require "stackprof"
+
+target_id = ARGV[0] or abort("usage: profile_async <target> <workload>")
+workload_id = ARGV[1] or abort("usage: profile_async <target> <workload>")
+
+if (gem_home = ENV["BENCH_GEM_HOME"])
+  async_home = File.join(gem_home, "async")
+  if Dir.exist?(async_home)
+    ENV["GEM_HOME"] = async_home
+    ENV["GEM_PATH"] = async_home
+    Gem.clear_paths
+  end
+end
+
+require "async"
+
+# Load carbon backend if requested
+if target_id == "carbon"
+  require_relative "../lib/carbon_fiber/async"
+  CarbonFiber::Async.default!
+end
+
+module AsyncBench
+  WORKLOADS = {
+    "http_client_api" => {defaults: {concurrency: 20, iterations: 200}, metric: "requests_per_second"},
+    "http_client_download" => {defaults: {concurrency: 10, iterations: 20, response_bytes: 262_144}, metric: "downloads_per_second"},
+    "task_churn" => {defaults: {batch_size: 100, iterations: 200}, metric: "tasks_per_second"},
+    "barrier_fanout" => {defaults: {coordinators: 10, fan_width: 10, iterations: 100}, metric: "cycles_per_second"},
+    "sleep_storm" => {defaults: {fibers: 200, iterations: 50}, metric: "sleeps_per_second"},
+    "pipe_pipeline" => {defaults: {stages: 5, messages: 500, payload: 512}, metric: "messages_per_second"},
+    "condition_signal" => {defaults: {producers: 5, consumers: 20, messages: 200}, metric: "signals_per_second"},
+    "connection_pool" => {defaults: {concurrency: 50, iterations: 100}, metric: "checkouts_per_second"},
+    "cascading_timeout" => {defaults: {concurrency: 20, iterations: 200}, metric: "operations_per_second"},
+    "tcp_throughput" => {defaults: {clients: 10, iterations: 200, payload: 512}, metric: "operations_per_second"}
+  }.freeze
+  module Workloads; end
+
+  def self.monotonic_time
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  end
+
+  def self.classify(key)
+    key.split("_").map(&:capitalize).join
+  end
+end
+require_relative "lib/async_bench/workloads/#{workload_id}"
+
+workload_def = AsyncBench::WORKLOADS.fetch(workload_id)
+workload_class = AsyncBench::Workloads.const_get(AsyncBench.classify(workload_id))
+
+dump_path = "/tmp/stackprof-async-#{target_id}-#{workload_id}.dump"
+result = nil
+Sync do
+  StackProf.run(mode: :wall, interval: 200, out: dump_path) do
+    result = workload_class.new.call(workload_def[:defaults])
+  end
+end
+
+puts "async-#{target_id}/#{workload_id}: #{result[workload_def[:metric]]}"
+report = StackProf::Report.new(Marshal.load(File.binread(dump_path)))
+puts "samples=#{report.data[:samples]} gc=#{report.data[:gc_samples] || 0}"
+report.frames.values.sort_by { |f| -f[:samples] }.first(8).each do |f|
+  printf("  %5d %5.1f%% %s\n", f[:samples], f[:samples] * 100.0 / report.data[:samples], f[:name])
+end

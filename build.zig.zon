@@ -1,0 +1,21 @@
+.{
+    .name = .carbon_fiber,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.15.2",
+    .fingerprint = 0xa77e58bde51c90b2,
+    .dependencies = .{
+        .zig_rb = .{
+            .url = "https://github.com/furunkel/zig.rb/archive/00f0e2aabcb90664d8c29683d266c4a0030e36cc.tar.gz",
+            .hash = "zig_rb-0.0.0-dYaqXfhMAQDmO0OQGx0oWgU9O6QkQCJGpKef8GstBXuM",
+        },
+        .libxev = .{
+            .url = "https://github.com/mitchellh/libxev/archive/d398cba9.tar.gz",
+            .hash = "libxev-0.0.0-86vtc689EwAjQWysidPm9NKkAwwUNByiE3kZTg_xu0Hp",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "ext",
+    },
+}
