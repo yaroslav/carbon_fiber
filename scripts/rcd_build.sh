@@ -25,21 +25,10 @@ if ! command -v zig &>/dev/null; then
     Darwin) ZIG_OS="macos" ;;
     *)      ZIG_OS="linux" ;;
   esac
-  # RCD images contain a cross-compilation toolchain for ${RCD_PLATFORM}, but
-  # the container itself runs on the host's architecture — not the target's.
-  # `uname -m` can lie under Rosetta or QEMU (reporting the host kernel arch
-  # instead of the effective container arch), so read the ELF header of a
-  # binary we know executes in this environment. Whatever runs /bin/ls is
-  # exactly what needs to run Zig.
-  if file /bin/ls 2>/dev/null | grep -q 'x86-64'; then
-    ZIG_ARCH="x86_64"
-  elif file /bin/ls 2>/dev/null | grep -q 'ARM aarch64'; then
-    ZIG_ARCH="aarch64"
-  else
-    echo "ERROR: unable to detect container architecture" >&2
-    file /bin/ls >&2 || true
-    exit 1
-  fi
+  # RCD images are host-native and contain a cross-compilation toolchain for
+  # ${RCD_PLATFORM}. The Zig binary we download must match the container's
+  # actual architecture, not the target — `uname -m` gives us that.
+  ZIG_ARCH=$(uname -m | sed 's/arm64/aarch64/')
   ZIG_DIR="${ROOT_DIR}/.zig-install/zig-${ZIG_ARCH}-${ZIG_OS}-${ZIG_VERSION}"
   if [[ ! -d "$ZIG_DIR" ]]; then
     echo "==> Downloading Zig ${ZIG_VERSION} (${ZIG_ARCH}-${ZIG_OS})..."
