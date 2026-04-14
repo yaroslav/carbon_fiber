@@ -318,11 +318,21 @@ module CarbonFiber
       end
 
       def collect_expired_timers_into(now, expired)
-        @timers.delete_if do |_token, (deadline, kind, fiber, payload)|
-          next false if deadline > now
+        # Sort expired timers by deadline so fibers waking up in the same tick
+        # resume in the order their sleeps were scheduled to fire. Without
+        # this sort, @timers' Hash insertion order leaks into the wake order
+        # whenever multiple timers expire before the event loop revisits
+        # them — visible as non-deterministic ordering on fast runners.
+        triggered = []
+        @timers.delete_if do |_token, entry|
+          next false if entry[0] > now
 
-          expired << [kind, fiber, payload, true]
+          triggered << entry
           true
+        end
+        triggered.sort_by! { |entry| entry[0] }
+        triggered.each do |(_deadline, kind, fiber, payload)|
+          expired << [kind, fiber, payload, true]
         end
       end
 
