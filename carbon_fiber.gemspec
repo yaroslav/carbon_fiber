@@ -35,7 +35,6 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "rake", "~> 13.0"
   spec.add_development_dependency "rake-compiler-dock", "~> 1.11"
   spec.add_development_dependency "rspec", "~> 3.13"
-  spec.add_development_dependency "stackprof", "~> 0.2"
   spec.add_development_dependency "standard", "~> 1.0"
   spec.add_development_dependency "yard", "~> 0.9"
   spec.add_development_dependency "lefthook", "~> 2.1.5"
