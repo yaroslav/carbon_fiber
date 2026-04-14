@@ -7,22 +7,31 @@ on:
 
 jobs:
   test:
+    name: ${{ matrix.fallback && 'fallback' || 'native' }} / ${{ matrix.os }} / ${{ matrix.ruby }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Native path: build the Zig extension and run specs against it.
           - { os: ubuntu-latest,  ruby: "3.4" }
           - { os: ubuntu-latest,  ruby: "4.0" }
           - { os: macos-latest,   ruby: "3.4" }
           - { os: macos-latest,   ruby: "4.0" }
-          - { os: windows-latest, ruby: "4.0" }
+          # Fallback path: pure-Ruby selector, no native extension, no Zig.
+          # Windows only ships the fallback; Linux and macOS run it here to
+          # catch fallback regressions on every PR without waiting for Windows.
+          - { os: ubuntu-latest,  ruby: "3.4", fallback: true }
+          - { os: ubuntu-latest,  ruby: "4.0", fallback: true }
+          - { os: macos-latest,   ruby: "3.4", fallback: true }
+          - { os: macos-latest,   ruby: "4.0", fallback: true }
+          - { os: windows-latest, ruby: "4.0", fallback: true }
 
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
 
       - name: Install Zig
-        if: runner.os != 'Windows'
+        if: ${{ !matrix.fallback }}
         run: |
           ZIG_VERSION="0.15.2"
           ZIG_ARCH=$(uname -m | sed 's/arm64/aarch64/')
@@ -38,10 +47,10 @@ jobs:
           bundler-cache: true
 
       - name: Build native extension
-        if: runner.os != 'Windows'
+        if: ${{ !matrix.fallback }}
         run: bundle exec rake compile
 
       - name: Run specs
         run: bundle exec rake spec
         env:
-          CARBON_FIBER_FORCE_FALLBACK: ${{ runner.os == 'Windows' && '1' || '' }}
+          CARBON_FIBER_FORCE_FALLBACK: ${{ matrix.fallback && '1' || '' }}

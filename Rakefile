@@ -43,7 +43,7 @@ LINUX_PLATFORMS = [
   ["x86_64-linux", "x86_64-linux-gnu", "x86_64-linux-gnu"],
   ["aarch64-linux", "aarch64-linux-gnu", "aarch64-linux-gnu"]
 ]
-DARWIN_PLATFORMS = %w[arm64-darwin x86_64-darwin]
+DARWIN_PLATFORMS = %w[arm64-darwin]
 ALL_PLATFORMS = LINUX_PLATFORMS.map(&:first) + DARWIN_PLATFORMS
 
 # Cross-compile tasks

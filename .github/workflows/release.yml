@@ -50,14 +50,14 @@ jobs:
           name: gems-linux
           path: pkg/*.gem
 
-  # macOS: native builds for arm64 and x86_64, each with multiple Ruby versions
+  # macOS: native builds for arm64 (only supported darwin platform).
+  # x86_64-darwin users get the source gem + pure-Ruby fallback.
   macos:
     needs: version
     strategy:
       matrix:
         include:
           - { os: macos-latest, gem_platform: arm64-darwin }
-          - { os: macos-13, gem_platform: x86_64-darwin }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6

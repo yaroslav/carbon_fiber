@@ -25,12 +25,20 @@ if ! command -v zig &>/dev/null; then
     Darwin) ZIG_OS="macos" ;;
     *)      ZIG_OS="linux" ;;
   esac
-  # Derive arch from RCD_PLATFORM, not uname -m: on Apple Silicon, Docker
-  # reports the host kernel arch (aarch64) even inside x86_64 containers.
-  if [[ "${RCD_PLATFORM}" == aarch64-* ]]; then
+  # RCD images contain a cross-compilation toolchain for ${RCD_PLATFORM}, but
+  # the container itself runs on the host's architecture — not the target's.
+  # `uname -m` can lie under Rosetta or QEMU (reporting the host kernel arch
+  # instead of the effective container arch), so read the ELF header of a
+  # binary we know executes in this environment. Whatever runs /bin/ls is
+  # exactly what needs to run Zig.
+  if file /bin/ls 2>/dev/null | grep -q 'x86-64'; then
+    ZIG_ARCH="x86_64"
+  elif file /bin/ls 2>/dev/null | grep -q 'ARM aarch64'; then
     ZIG_ARCH="aarch64"
   else
-    ZIG_ARCH="x86_64"
+    echo "ERROR: unable to detect container architecture" >&2
+    file /bin/ls >&2 || true
+    exit 1
   fi
   ZIG_DIR="${ROOT_DIR}/.zig-install/zig-${ZIG_ARCH}-${ZIG_OS}-${ZIG_VERSION}"
   if [[ ! -d "$ZIG_DIR" ]]; then
