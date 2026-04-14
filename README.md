@@ -3,7 +3,7 @@
 **High performance Ruby Fiber Scheduler powered by Zig and libxev.**
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/yaroslav/bundlebun/refs/heads/main/assets/images/carbon_fiber.jpg" width="600" height="400" alt="Carbon Fiber">
+  <img src="https://raw.githubusercontent.com/yaroslav/carbon_fiber/refs/heads/main/assets/images/carbon_fiber.jpg" width="600" height="400" alt="Carbon Fiber">
 </div>
 
 [![GitHub Release](https://img.shields.io/github/v/release/yaroslav/carbon_fiber)](https://github.com/yaroslav/carbon_fiber/releases)
