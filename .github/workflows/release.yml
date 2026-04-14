@@ -1,42 +1,38 @@
 name: Release
 
-# Triggered manually. Tags the current commit, cross-compiles all platform
-# gems, creates a GitHub Release with changelog and gems, publishes to RubyGems.
+# Triggered manually. Builds all platform gems from the current commit, and —
+# only if every build succeeds — creates a git tag, GitHub Release with
+# changelog and gems, and publishes to RubyGems. Tagging happens atomically
+# with the GitHub Release via `gh release create --target`, so a failed build
+# never leaves an orphan tag on the remote.
 on:
   workflow_dispatch:
 
 jobs:
-  # Read version from version.rb, create git tag
-  tag:
+  # Read version from version.rb. Tag creation is deferred to the publish job.
+  version:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     outputs:
-      tag: ${{ steps.tag.outputs.tag }}
-      version: ${{ steps.tag.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v6
 
-      - name: Read version and create tag
-        id: tag
+      - name: Read version
+        id: version
         run: |
           VERSION=$(ruby -e "require_relative 'lib/carbon_fiber/version'; print CarbonFiber::VERSION")
-          TAG="v${VERSION}"
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "${TAG}"
-          git push origin "${TAG}"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
   # Linux: cross-compile x86_64 and aarch64 inside RCD Docker containers
   linux:
-    needs: tag
+    needs: version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.tag.outputs.tag }}
+          ref: ${{ github.sha }}
 
       - uses: ruby/setup-ruby@v1
         with:
@@ -56,7 +52,7 @@ jobs:
 
   # macOS: native builds for arm64 and x86_64, each with multiple Ruby versions
   macos:
-    needs: tag
+    needs: version
     strategy:
       matrix:
         include:
@@ -66,7 +62,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.tag.outputs.tag }}
+          ref: ${{ github.sha }}
 
       - name: Install Zig
         run: |
@@ -121,12 +117,12 @@ jobs:
 
   # Source gem: pure Ruby, works on all platforms without native extension
   source:
-    needs: tag
+    needs: version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.tag.outputs.tag }}
+          ref: ${{ github.sha }}
 
       - uses: ruby/setup-ruby@v1
         with:
@@ -155,9 +151,9 @@ jobs:
           name: gems-source
           path: pkg/*.gem
 
-  # Publish: GitHub Release (with gems + changelog) + RubyGems
+  # Publish: create git tag + GitHub Release (atomic) + RubyGems
   publish:
-    needs: [tag, linux, macos, source]
+    needs: [version, linux, macos, source]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -166,7 +162,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.tag.outputs.tag }}
+          ref: ${{ github.sha }}
 
       - uses: ruby/setup-ruby@v1
         with:
@@ -181,17 +177,20 @@ jobs:
 
       - name: Extract changelog for this version
         run: |
-          VERSION="${{ needs.tag.outputs.version }}"
+          VERSION="${{ needs.version.outputs.version }}"
           awk "/^## \[${VERSION}\]/{found=1; next} /^## \[/{if(found) exit} found{print}" \
             CHANGELOG.md > /tmp/release_notes.md
           cat /tmp/release_notes.md
 
-      - name: Create GitHub Release
+      # Creates the git tag at github.sha and the GitHub Release in one call.
+      # If this step fails, no tag is pushed — the orphan-tag risk is gone.
+      - name: Create git tag and GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ needs.tag.outputs.tag }}" \
-            --title "Carbon Fiber ${{ needs.tag.outputs.version }}" \
+          gh release create "${{ needs.version.outputs.tag }}" \
+            --target "${{ github.sha }}" \
+            --title "Carbon Fiber ${{ needs.version.outputs.version }}" \
             --notes-file /tmp/release_notes.md \
             pkg/*.gem
 
