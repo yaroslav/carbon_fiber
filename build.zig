@@ -57,13 +57,19 @@ pub fn build(b: *std.Build) void {
         return;
     };
 
+    // Ruby's require on macOS only recognises files whose extension matches
+    // RbConfig::CONFIG["DLEXT"], which is "bundle" on darwin and "so" on
+    // linux. Naming mismatch means native.rb silently falls through to the
+    // pure-Ruby fallback on fresh macOS installs.
+    const dlext = if (is_macos) "bundle" else "so";
+
     const copy_cmd = b.addSystemCommand(&.{
         "sh",
         "-c",
         std.fmt.allocPrint(
             allocator,
-            "mkdir -p {s} && cp $1 {s}/carbon_fiber_native.so",
-            .{ dest_path, dest_path },
+            "mkdir -p {s} && cp $1 {s}/carbon_fiber_native.{s}",
+            .{ dest_path, dest_path, dlext },
         ) catch |err| {
             std.debug.print("Failed to build copy command: {}\n", .{err});
             b.installArtifact(fibers_ext);
