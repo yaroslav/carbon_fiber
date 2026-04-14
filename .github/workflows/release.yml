@@ -50,15 +50,11 @@ jobs:
           name: gems-linux
           path: pkg/*.gem
 
-  # macOS: native builds for arm64 (only supported darwin platform).
-  # x86_64-darwin users get the source gem + pure-Ruby fallback.
+  # macOS: native build for arm64-darwin. x86_64-darwin is not supported as
+  # a precompiled gem — Intel Mac users get the source gem + pure-Ruby fallback.
   macos:
     needs: version
-    strategy:
-      matrix:
-        include:
-          - { os: macos-latest, gem_platform: arm64-darwin }
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
         with:
@@ -94,11 +90,11 @@ jobs:
         run: bundle exec rake compile
 
       - name: Build platform gem
-        run: bundle exec rake gem:${{ matrix.gem_platform }}
+        run: bundle exec rake gem:arm64-darwin
 
       - name: Smoke-test installed gem
         run: |
-          gem install pkg/carbon_fiber-*-${{ matrix.gem_platform }}.gem
+          gem install pkg/carbon_fiber-*-arm64-darwin.gem
           ruby -e '
             require "carbon_fiber"
             puts "backend: #{CarbonFiber::Native.backend}"
@@ -112,7 +108,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: gems-${{ matrix.gem_platform }}
+          name: gems-arm64-darwin
           path: pkg/*.gem
 
   # Source gem: pure Ruby, works on all platforms without native extension
