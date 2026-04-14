@@ -190,5 +190,16 @@ jobs:
             --notes-file /tmp/release_notes.md \
             pkg/*.gem
 
-      - name: Push to RubyGems
-        uses: rubygems/release-gem@v1
+      # rubygems/release-gem@v1 can't be used here — it runs `rake release`,
+      # a Bundler-provided single-gem task that doesn't understand the pre-
+      # built multi-platform artifacts in pkg/. Use the underlying OIDC
+      # primitive directly and push each gem ourselves.
+      - name: Configure RubyGems credentials
+        uses: rubygems/configure-rubygems-credentials@main
+
+      - name: Push gems to RubyGems
+        run: |
+          for gem in pkg/*.gem; do
+            echo "Pushing ${gem}"
+            gem push "${gem}"
+          done
