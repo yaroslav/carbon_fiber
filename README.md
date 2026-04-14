@@ -70,8 +70,11 @@ On my workloads, wins almost all workloads across Async, Itsi, fiber_scheduler, 
 ## Requirements
 
 - Ruby 3.4 or 4.0.
+- Linux (amd64 or arm64), macOS (Apple Silicon, x64 uses fallback*), Windows (fallback*).
 
 Distributed as aleady compiled and ready to use: Zig compiler _not_ needed.
+
+_\* Fallback means pure Ruby code, worse performance._
 
 ## Installation
 
