@@ -26,7 +26,8 @@ jobs:
         run: |
           ZIG_VERSION="0.15.2"
           ZIG_ARCH=$(uname -m | sed 's/arm64/aarch64/')
-          ZIG_OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+          # Zig uses "macos" in download slugs, not "darwin" as uname reports.
+          ZIG_OS=$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/macos/')
           curl -sSfL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ZIG_ARCH}-${ZIG_OS}-${ZIG_VERSION}.tar.xz" \
             | tar xJ -C /tmp
           echo "/tmp/zig-${ZIG_ARCH}-${ZIG_OS}-${ZIG_VERSION}" >> $GITHUB_PATH
