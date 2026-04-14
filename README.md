@@ -9,18 +9,18 @@
 [![GitHub Release](https://img.shields.io/github/v/release/yaroslav/carbon_fiber)](https://github.com/yaroslav/carbon_fiber/releases)
 [![Docs](https://img.shields.io/badge/yard-docs-blue.svg)](https://rubydoc.info/gems/carbon_fiber)
 
-**Carbon Fiber is a Ruby Fiber Scheduler** with a native event loop (io_uring on Linux, kqueue on macOS). Install it, and your `Net::HTTP`, `TCPSocket`, `Mutex`, `Queue`, `Process.spawn` code becomes concurrent without any changes. Carbon Fiber also **supports the Async framework** ([async gem](https://github.com/socketry/async)) working as a plug and play backend.
+**Carbon Fiber is a Ruby Fiber Scheduler** with a native event loop (io_uring on Linux, kqueue on macOS). Install it, and your `Net::HTTP`, `TCPSocket`, `Mutex`, `Queue`, `Process.spawn` code becomes concurrent without any changes. Carbon Fiber also works as a plug-and-play backend for the **Async framework** ([async gem](https://github.com/socketry/async)).
 
-By my benchmarks (follows), Carbon Fiber ends up being the **fastest pure Ruby Fiber Scheduler** currently available.
+In my benchmarks (see below), Carbon Fiber is the **fastest pure Ruby Fiber Scheduler** currently available.
 
 Carbon Fiber is implemented using the **Zig** programming language and is powered by **[libxev](https://github.com/mitchellh/libxev)** by Mitchell Hashimoto, used in his **Ghostty** terminal emulator. It is one of the first Ruby native extensions written in Zig.
 
 ## Features
 
-- **Very fast.** My benchmarks place it as overall the fastest pure Ruby Fiber Scheduler. Uses **io_uring on Linux** and **kqueue on macOS**. 
+- **Very fast.** My benchmarks rank it as the fastest pure Ruby Fiber Scheduler overall. Uses **io_uring on Linux** and **kqueue on macOS**.
 - **Plug and play with plain Ruby**, thanks to the Fiber Scheduler API—`Net::HTTP`, `TCPSocket`, `Process.spawn`, `Mutex`, `Queue`, DNS—all transparently concurrent under the scheduler; no gem-specific wrappers required.
 - **Async (gem async) support** as a swappable backend. One call swaps the [Async](https://github.com/socketry/async) event loop for ours.
-- **Pure-Ruby fallback**—when the native extension isn't available (Windows, for instance), drops to pure Ruby 4.0+ code behind the same API.
+- **Pure-Ruby fallback**—when the native extension isn't available (Windows, for instance), Carbon Fiber uses a pure Ruby implementation behind the same API.
 
 ## Example
 
@@ -63,7 +63,7 @@ Some benchmarks:
 | `cascading_timeout` | **4.659k ops/s** | 4.488k ops/s | error | +4% |
 | `connection_pool` | **4.989k co/s** | 4.912k co/s | 4.968k co/s | +2% |
 
-On my workloads, wins almost all workloads across Async, Itsi, fiber_scheduler, io-event, and libev. [See detailed benchmarks →](#benchmarks)
+Wins on most workloads against Async, Itsi, fiber_scheduler, io-event, and libev. [See detailed benchmarks →](#benchmarks)
 
 ---
 
@@ -72,7 +72,7 @@ On my workloads, wins almost all workloads across Async, Itsi, fiber_scheduler, 
 - Ruby 3.4 or 4.0.
 - Linux (amd64 or arm64), macOS (Apple Silicon, x64 uses fallback*), Windows (fallback*).
 
-Distributed as aleady compiled and ready to use: Zig compiler _not_ needed.
+Ships precompiled—no Zig compiler required.
 
 _\* Fallback means pure Ruby code, worse performance._
 
@@ -174,7 +174,7 @@ Alternatively, set the environment variable: `IO_EVENT_SELECTOR=CarbonFiberSelec
 
 #### Example: Fan-out API calls
 
-Call multiple upstream endpoints in parallel using `Async::Barrier`, then wait for all results. 
+Call multiple upstream endpoints in parallel using `Async::Barrier`, then wait for all results.
 
 ```ruby
 require "async"
@@ -256,7 +256,7 @@ If the native extension can't be loaded (on Windows, for example), a pure-Ruby f
 
 ## Benchmarks
 
-AWS EC2 c7a.2xlarge, 8 dedicated vCPUs,Ubuntu 24.04 LTS, kernel 6.17, Ruby 4.0.2 + YJIT, io_uring. 5-run median.
+AWS EC2 c7a.2xlarge, 8 dedicated vCPUs, Ubuntu 24.04 LTS, kernel 6.17, Ruby 4.0.2 + YJIT, io_uring. 5-run median.
 
 ### Ruby Fiber Schedulers (leading ones): Carbon Fiber vs. Async vs. Itsi
 
