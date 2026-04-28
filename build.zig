@@ -13,12 +13,32 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // zig_rb's build.zig calls `zig_tests.linkSystemLibrary("ruby")` on a
+    // Compile step whose root_module is the same module exported to
+    // consumers; via the deprecated alias, that mutates the shared module's
+    // link_objects with a "ruby" system_lib. Inheriting it would bake an
+    // absolute libruby path into the macOS bundle and pull in whatever
+    // libruby Linux's ld happens to resolve (often the runner's system
+    // Ruby, breaking cross-version loads). Strip it here; Ruby's C-API
+    // symbols are resolved at dlopen against the host ruby process, like
+    // every other distributable Ruby native extension.
+    const rb_module = zig_rb_dep.module("zig_rb");
+    var i: usize = 0;
+    while (i < rb_module.link_objects.items.len) {
+        const lo = rb_module.link_objects.items[i];
+        if (lo == .system_lib and std.mem.eql(u8, lo.system_lib.name, "ruby")) {
+            _ = rb_module.link_objects.orderedRemove(i);
+        } else {
+            i += 1;
+        }
+    }
+
     const fibers_module = b.createModule(.{
         .root_source_file = b.path("ext/carbon_fiber_native/main.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "rb", .module = zig_rb_dep.module("zig_rb") },
+            .{ .name = "rb", .module = rb_module },
             .{ .name = "xev", .module = libxev_dep.module("xev") },
         },
     });
@@ -38,12 +58,17 @@ pub fn build(b: *std.Build) void {
         },
     );
 
+    // macOS' linker rejects undefined symbols in shared libraries by default;
+    // Linux' ld permits them. Allow undefined Ruby C-API symbols on macOS so
+    // dyld resolves them at dlopen against the host ruby process.
+    const is_macos = target.result.os.tag == .macos;
+    if (is_macos) fibers_ext.linker_allow_shlib_undefined = true;
+
     // Enable full LTO for release builds to allow cross-module inlining between
     // the event loop, I/O helpers, and Ruby binding layers.
     // macOS excluded: Zig 0.15's linker can't resolve Xcode 26.4 TBD entries,
     // so we use DEVELOPER_DIR=/dev/null which bypasses the system SDK but also
     // prevents LLD (required for LTO) from linking against libSystem.
-    const is_macos = target.result.os.tag == .macos;
     if (optimize != .Debug and !is_macos) fibers_ext.lto = .full;
 
     const allocator = b.allocator;

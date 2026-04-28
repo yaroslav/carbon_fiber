@@ -31,12 +31,12 @@ task compile: :sync_version do
   fix_macos_install_names if RUBY_PLATFORM.include?("darwin")
 end
 
-# Zig's link line for the bundle picks up libruby with an absolute install
-# name (CI's hostedtoolcache, or a developer's prefix). Without rewriting,
-# dlopen on a different machine fails because the path doesn't exist.
-# Convert to @rpath form and add an rpath that resolves at load time
-# relative to the host ruby executable, then re-codesign (Apple Silicon
-# requires a valid signature; modifying load commands invalidates it).
+# Strip non-portable artifacts the Zig linker leaves in the macOS bundle:
+# absolute LC_RPATH entries (from Zig's addLibraryPath, which targets the
+# host ruby's libdir) and any absolute libruby reference that may slip back
+# in if zig_rb's contamination returns. Re-codesign because Apple Silicon
+# rejects unsigned binaries and modifying load commands invalidates the
+# signature.
 def fix_macos_install_names
   bundles = Dir["lib/carbon_fiber/*/carbon_fiber_native.bundle"]
   raise "No macOS bundles to post-process under lib/carbon_fiber/*/" if bundles.empty?
@@ -44,20 +44,17 @@ def fix_macos_install_names
   bundles.each do |bundle|
     deps = `otool -L #{bundle.shellescape}`
     libruby_line = deps.lines.find { |l| l.match?(%r{/libruby\.\d+\.\d+\.dylib}) }
-    raise "No libruby reference found in #{bundle}; link layout changed?" unless libruby_line
-
-    old = libruby_line.match(/^\s*(\S.*?)\s+\(/)[1]
-    if old.start_with?("/")
-      new = "@rpath/#{File.basename(old)}"
-      sh "install_name_tool", "-change", old, new, bundle
+    if libruby_line
+      old = libruby_line.match(/^\s*(\S.*?)\s+\(/)[1]
+      if old.start_with?("/")
+        new = "@rpath/#{File.basename(old)}"
+        sh "install_name_tool", "-change", old, new, bundle
+      end
     end
 
     rpaths = `otool -l #{bundle.shellescape}`.scan(/^\s+path\s+(.+?)\s+\(offset \d+\)/).flatten
     rpaths.each do |rpath|
       sh "install_name_tool", "-delete_rpath", rpath, bundle if rpath.start_with?("/")
-    end
-    unless rpaths.include?("@executable_path/../lib")
-      sh "install_name_tool", "-add_rpath", "@executable_path/../lib", bundle
     end
 
     sh "codesign", "--sign", "-", "--force", bundle
