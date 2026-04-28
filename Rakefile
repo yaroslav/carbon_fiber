@@ -82,10 +82,15 @@ RUBY_CROSS_VERSIONS = [
   {full: "4.0.0", api: "4.0.0"}
 ]
 
-# [gem_platform_name, rcd_platform (image suffix + dir name inside container), zig_target_triple]
+# [gem_platform_name, rcd_platform (image suffix), zig_target_triple]
+# rcd_platform also names the dir inside the RCD container *most* of the time;
+# scripts/rcd_build.sh discovers the actual path because the x86_64-musl image
+# uses x86_64-unknown-linux-musl as its top dir.
 LINUX_PLATFORMS = [
   ["x86_64-linux", "x86_64-linux-gnu", "x86_64-linux-gnu"],
-  ["aarch64-linux", "aarch64-linux-gnu", "aarch64-linux-gnu"]
+  ["aarch64-linux", "aarch64-linux-gnu", "aarch64-linux-gnu"],
+  ["x86_64-linux-musl", "x86_64-linux-musl", "x86_64-linux-musl"],
+  ["aarch64-linux-musl", "aarch64-linux-musl", "aarch64-linux-musl"]
 ]
 DARWIN_PLATFORMS = %w[arm64-darwin]
 ALL_PLATFORMS = LINUX_PLATFORMS.map(&:first) + DARWIN_PLATFORMS

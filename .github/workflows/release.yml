@@ -25,10 +25,21 @@ jobs:
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-  # Linux: cross-compile x86_64 and aarch64 inside RCD Docker containers
+  # Linux: cross-compile each platform in its own job so per-platform .so
+  # files in lib/ never overlap. Single-job sequential cross-compile would
+  # clobber earlier outputs because build.zig writes to a path keyed by
+  # ruby_version only — not by platform.
   linux:
     needs: version
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - x86_64-linux
+          - aarch64-linux
+          - x86_64-linux-musl
+          - aarch64-linux-musl
     steps:
       - uses: actions/checkout@v6
         with:
@@ -39,15 +50,12 @@ jobs:
           ruby-version: "4.0"
           bundler-cache: true
 
-      - name: Cross-compile Linux targets
-        run: bundle exec rake cross:linux:all
-
-      - name: Build Linux platform gems
-        run: bundle exec rake gem:x86_64-linux gem:aarch64-linux
+      - name: Cross-compile and package ${{ matrix.platform }}
+        run: bundle exec rake cross:linux:${{ matrix.platform }} gem:${{ matrix.platform }}
 
       - uses: actions/upload-artifact@v7
         with:
-          name: gems-linux
+          name: gems-${{ matrix.platform }}
           path: pkg/*.gem
 
   # macOS: native build for arm64-darwin. x86_64-darwin is not supported as
@@ -219,9 +227,75 @@ jobs:
             puts "verify_macos: native bundle loaded and ran on fresh runner"
           '
 
+  # Cross-runner verification: each matrix entry runs on a host whose
+  # architecture and libc match the gem's platform, installs the
+  # precompiled gem, and requires it. A wrong-arch or wrong-libc .so fails
+  # dlopen, which native.rb propagates as LoadError. Musl variants drop
+  # into an Alpine container via `docker run` rather than GHA's
+  # `container:` because Node-based actions ship glibc binaries.
+  verify_linux:
+    needs: [version, linux]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: x86_64-linux,        runs-on: ubuntu-latest,    ruby: "3.4" }
+          - { platform: x86_64-linux,        runs-on: ubuntu-latest,    ruby: "4.0" }
+          - { platform: aarch64-linux,       runs-on: ubuntu-24.04-arm, ruby: "3.4" }
+          - { platform: aarch64-linux,       runs-on: ubuntu-24.04-arm, ruby: "4.0" }
+          - { platform: x86_64-linux-musl,   runs-on: ubuntu-latest,    ruby: "3.4", alpine: "3.4" }
+          - { platform: x86_64-linux-musl,   runs-on: ubuntu-latest,    ruby: "4.0", alpine: "4.0" }
+          - { platform: aarch64-linux-musl,  runs-on: ubuntu-24.04-arm, ruby: "3.4", alpine: "3.4" }
+          - { platform: aarch64-linux-musl,  runs-on: ubuntu-24.04-arm, ruby: "4.0", alpine: "4.0" }
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: gems-${{ matrix.platform }}
+          path: pkg
+
+      - if: matrix.alpine == ''
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+
+      - name: Smoke test (glibc, native)
+        if: matrix.alpine == ''
+        run: |
+          gem install pkg/carbon_fiber-*-${{ matrix.platform }}.gem
+          ruby -e '
+            require "carbon_fiber"
+            backend = CarbonFiber::Native.backend
+            raise "expected libxev backend, got #{backend.inspect}" unless backend == "libxev"
+            r = []
+            Fiber.set_scheduler(CarbonFiber::Scheduler.new)
+            3.times { |i| Fiber.schedule { sleep 0.01; r << i } }
+            Fiber.scheduler.close
+            raise "expected 3 fibers, got #{r.size}" unless r.size == 3
+            puts "verify_linux ${{ matrix.platform }}/ruby${{ matrix.ruby }}: OK"
+          '
+
+      - name: Smoke test (musl, Alpine container)
+        if: matrix.alpine != ''
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work ruby:${{ matrix.alpine }}-alpine sh -c '
+            gem install pkg/carbon_fiber-*-${{ matrix.platform }}.gem
+            ruby -e "
+              require \"carbon_fiber\"
+              backend = CarbonFiber::Native.backend
+              raise \"expected libxev backend, got #{backend.inspect}\" unless backend == \"libxev\"
+              r = []
+              Fiber.set_scheduler(CarbonFiber::Scheduler.new)
+              3.times { |i| Fiber.schedule { sleep 0.01; r << i } }
+              Fiber.scheduler.close
+              raise \"expected 3 fibers, got #{r.size}\" unless r.size == 3
+              puts \"verify_linux ${{ matrix.platform }}/ruby${{ matrix.ruby }} (alpine): OK\"
+            "
+          '
+
   # Publish: create git tag + GitHub Release (atomic) + RubyGems
   publish:
-    needs: [version, linux, macos, source, verify_macos]
+    needs: [version, linux, macos, source, verify_linux, verify_macos]
     runs-on: ubuntu-latest
     environment: release
     permissions:

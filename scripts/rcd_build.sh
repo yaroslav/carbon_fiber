@@ -42,13 +42,24 @@ fi
 echo "==> zig $(zig version)"
 
 # ── Point build/ruby.zig at the cross-compiled Ruby headers ────────────────
-# RCD image layout: {RCD_BASE}/{RCD_PLATFORM}/ruby-{RUBY_FULL_VERSION}/
+# RCD image layout is mostly {RCD_BASE}/{RCD_PLATFORM}/ruby-{RUBY_FULL_VERSION}/,
+# but the x86_64-linux-musl image uses x86_64-unknown-linux-musl as its top
+# dir. Discover by API version if the canonical path is missing.
 RUBY_CROSS_DIR="${RCD_BASE}/${RCD_PLATFORM}/ruby-${RUBY_FULL_VERSION}"
+if [[ ! -d "$RUBY_CROSS_DIR" ]]; then
+  for alt in "${RCD_BASE}"/*/; do
+    candidate="${alt}ruby-${RUBY_FULL_VERSION}"
+    if [[ -d "$candidate" ]]; then
+      RUBY_CROSS_DIR="$candidate"
+      break
+    fi
+  done
+fi
 
 if [[ ! -d "$RUBY_CROSS_DIR" ]]; then
-  echo "ERROR: no cross Ruby at ${RUBY_CROSS_DIR}"
+  echo "ERROR: no cross Ruby for ${RUBY_FULL_VERSION} under ${RCD_BASE}"
   echo "Available:"
-  ls "${RCD_BASE}/${RCD_PLATFORM}/" 2>/dev/null || ls "${RCD_BASE}/" || true
+  ls "${RCD_BASE}/" || true
   exit 1
 fi
 
