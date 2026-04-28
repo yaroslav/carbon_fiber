@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rspec/core/rake_task"
+require "shellwords"
 require_relative "lib/carbon_fiber/version"
 
 RSpec::Core::RakeTask.new(:spec)
@@ -27,6 +28,52 @@ desc "Compile the Zig native extension (also syncs version)"
 task compile: :sync_version do
   env = RUBY_PLATFORM.include?("darwin") ? {"DEVELOPER_DIR" => "/dev/null"} : {}
   sh env, "zig", "build", "-Doptimize=ReleaseFast"
+  fix_macos_install_names if RUBY_PLATFORM.include?("darwin")
+end
+
+# Zig's link line for the bundle picks up libruby with an absolute install
+# name (CI's hostedtoolcache, or a developer's prefix). Without rewriting,
+# dlopen on a different machine fails because the path doesn't exist.
+# Convert to @rpath form and add an rpath that resolves at load time
+# relative to the host ruby executable, then re-codesign (Apple Silicon
+# requires a valid signature; modifying load commands invalidates it).
+def fix_macos_install_names
+  bundles = Dir["lib/carbon_fiber/*/carbon_fiber_native.bundle"]
+  raise "No macOS bundles to post-process under lib/carbon_fiber/*/" if bundles.empty?
+
+  bundles.each do |bundle|
+    deps = `otool -L #{bundle.shellescape}`
+    libruby_line = deps.lines.find { |l| l.match?(%r{/libruby\.\d+\.\d+\.dylib}) }
+    raise "No libruby reference found in #{bundle}; link layout changed?" unless libruby_line
+
+    old = libruby_line.match(/^\s*(\S.*?)\s+\(/)[1]
+    if old.start_with?("/")
+      new = "@rpath/#{File.basename(old)}"
+      sh "install_name_tool", "-change", old, new, bundle
+    end
+
+    rpaths = `otool -l #{bundle.shellescape}`.scan(/^\s+path\s+(.+?)\s+\(offset \d+\)/).flatten
+    rpaths.each do |rpath|
+      sh "install_name_tool", "-delete_rpath", rpath, bundle if rpath.start_with?("/")
+    end
+    unless rpaths.include?("@executable_path/../lib")
+      sh "install_name_tool", "-add_rpath", "@executable_path/../lib", bundle
+    end
+
+    sh "codesign", "--sign", "-", "--force", bundle
+
+    final_libs = `otool -L #{bundle.shellescape}`
+    leaked = final_libs.lines.find do |l|
+      next false unless l.start_with?("\t/")
+      next false if l.match?(%r{^\t/usr/lib/}) || l.match?(%r{^\t/System/})
+      true
+    end
+    raise "Non-portable dylib in #{bundle}: #{leaked.strip}\n\n#{final_libs}" if leaked
+
+    final_rpaths = `otool -l #{bundle.shellescape}`.scan(/^\s+path\s+(.+?)\s+\(offset \d+\)/).flatten
+    leaked_rpath = final_rpaths.find { |r| r.start_with?("/") }
+    raise "Non-portable LC_RPATH in #{bundle}: #{leaked_rpath}" if leaked_rpath
+  end
 end
 
 ZIG_VERSION = "0.15.2"

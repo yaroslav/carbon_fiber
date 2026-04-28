@@ -20,14 +20,17 @@ native_paths = [
   )
 ]
 
+# A native binary that exists but fails to load raises LoadError instead of
+# silently falling back, so dyld/packaging bugs surface immediately.
 native_loaded =
   if ENV["CARBON_FIBER_FORCE_FALLBACK"] == "1"
     false
   else
-    native_paths.any? do |path|
-      require path
+    existing = native_paths.find { |path| File.exist?(path) }
+    if existing
+      require existing
       true
-    rescue LoadError
+    else
       false
     end
   end

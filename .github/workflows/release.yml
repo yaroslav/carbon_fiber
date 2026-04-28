@@ -89,6 +89,30 @@ jobs:
       - name: Compile for Ruby 4.0
         run: bundle exec rake compile
 
+      # Defense-in-depth check on top of the Rakefile post-processing: smoke
+      # tests run on the build runner, where any leaked absolute path still
+      # resolves locally and would mask the bug. This step inspects the linker
+      # metadata directly so a regression cannot ship.
+      - name: Verify bundle install_names are portable
+        run: |
+          set -euo pipefail
+          fail=0
+          for bundle in lib/carbon_fiber/*/carbon_fiber_native.bundle; do
+            echo "::group::$bundle"
+            otool -L "$bundle"
+            otool -l "$bundle" | grep -A2 LC_RPATH || true
+            echo "::endgroup::"
+            if otool -L "$bundle" | tail -n +2 | grep -E '^\s+/' | grep -vE '^\s+(/usr/lib/|/System/)'; then
+              echo "::error::Non-portable LC_LOAD_DYLIB in $bundle"
+              fail=1
+            fi
+            if otool -l "$bundle" | awk '/LC_RPATH/{f=1} f && /path /{print; f=0}' | grep -E 'path /'; then
+              echo "::error::Non-portable LC_RPATH in $bundle"
+              fail=1
+            fi
+          done
+          exit $fail
+
       - name: Build platform gem
         run: bundle exec rake gem:arm64-darwin
 
@@ -147,9 +171,57 @@ jobs:
           name: gems-source
           path: pkg/*.gem
 
+  # Cross-runner verification: install the precompiled arm64-darwin gem on a
+  # fresh macos-latest runner (different VM than the one that built it) and
+  # confirm dyld actually resolves @rpath/libruby.X.Y.dylib via the host
+  # ruby's prefix. The build-job smoke test cannot catch a baked-in absolute
+  # libruby path because it runs on the same runner where that path resolves.
+  verify_macos:
+    needs: [version, macos]
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ["3.4", "4.0"]
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: gems-arm64-darwin
+          path: pkg
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+
+      - name: Install precompiled gem
+        run: gem install pkg/carbon_fiber-*-arm64-darwin.gem
+
+      - name: Inspect installed bundle
+        run: |
+          for f in $(gem env gemdir)/gems/carbon_fiber-*-arm64-darwin/lib/carbon_fiber/*/carbon_fiber_native.bundle; do
+            echo "::group::$f"
+            otool -L "$f"
+            otool -l "$f" | grep -A2 LC_RPATH || true
+            echo "::endgroup::"
+          done
+
+      - name: Smoke test on fresh runner
+        run: |
+          ruby -e '
+            require "carbon_fiber"
+            backend = CarbonFiber::Native.backend
+            raise "expected libxev backend, got #{backend.inspect}" unless backend == "libxev"
+            results = []
+            Fiber.set_scheduler(CarbonFiber::Scheduler.new)
+            3.times { |i| Fiber.schedule { sleep 0.01; results << i } }
+            Fiber.scheduler.close
+            raise "expected 3 fibers, got #{results.size}" unless results.size == 3
+            puts "verify_macos: native bundle loaded and ran on fresh runner"
+          '
+
   # Publish: create git tag + GitHub Release (atomic) + RubyGems
   publish:
-    needs: [version, linux, macos, source]
+    needs: [version, linux, macos, source, verify_macos]
     runs-on: ubuntu-latest
     environment: release
     permissions:
