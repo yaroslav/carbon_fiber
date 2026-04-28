@@ -275,10 +275,13 @@ jobs:
             puts "verify_linux ${{ matrix.platform }}/ruby${{ matrix.ruby }}: OK"
           '
 
+      # Docker's default seccomp profile blocks io_uring_setup, which libxev
+      # uses on Linux. seccomp=unconfined matches what a real Alpine host
+      # would expose; this verify is standing in for one.
       - name: Smoke test (musl, Alpine container)
         if: matrix.alpine != ''
         run: |
-          docker run --rm -v "$PWD:/work" -w /work ruby:${{ matrix.alpine }}-alpine sh -c '
+          docker run --rm --security-opt seccomp=unconfined -v "$PWD:/work" -w /work ruby:${{ matrix.alpine }}-alpine sh -c '
             gem install pkg/carbon_fiber-*-${{ matrix.platform }}.gem
             ruby -e "
               require \"carbon_fiber\"
