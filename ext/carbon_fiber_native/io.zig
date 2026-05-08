@@ -10,7 +10,7 @@ const std = @import("std");
 /// bytes read (≥0) or negated errno.
 /// Used by ioRead's fast path to avoid fiber lookup when data is
 /// already available.
-pub fn recvOnce(fd: std.posix.fd_t, buf: []u8) isize {
+pub inline fn recvOnce(fd: std.posix.fd_t, buf: []u8) isize {
     while (true) {
         const rc = std.c.recv(fd, @ptrCast(buf.ptr), buf.len, std.posix.MSG.DONTWAIT);
         if (rc >= 0) return @intCast(rc);
@@ -22,7 +22,7 @@ pub fn recvOnce(fd: std.posix.fd_t, buf: []u8) isize {
 
 /// Non-blocking send on a pre-computed buffer slice. Returns
 /// bytes written (≥0) or negated errno.
-pub fn sendOnce(fd: std.posix.fd_t, buf: []const u8) isize {
+pub inline fn sendOnce(fd: std.posix.fd_t, buf: []const u8) isize {
     while (true) {
         const rc = std.c.send(fd, @ptrCast(buf.ptr), buf.len, std.posix.MSG.DONTWAIT);
         if (rc >= 0) return @intCast(rc);
@@ -61,7 +61,7 @@ pub fn drainSend(fd: std.posix.fd_t, buf: [*]const u8, total_len: usize, initial
 /// Returns true if the negated errno indicates the operation would block.
 /// Checks both EAGAIN and EWOULDBLOCK (which are the same on Linux but
 /// are distinct constants on some other platforms).
-pub fn wouldBlockErrno(errno_value: isize) bool {
+pub inline fn wouldBlockErrno(errno_value: isize) bool {
     const again = @intFromEnum(std.posix.E.AGAIN);
     const would_block = if (@hasField(std.posix.E, "WOULDBLOCK"))
         @intFromEnum(@field(std.posix.E, "WOULDBLOCK"))
@@ -70,7 +70,7 @@ pub fn wouldBlockErrno(errno_value: isize) bool {
     return errno_value == again or errno_value == would_block;
 }
 
-pub fn isEnotsock(errno_value: isize) bool {
+pub inline fn isEnotsock(errno_value: isize) bool {
     return errno_value == @intFromEnum(std.posix.E.NOTSOCK);
 }
 

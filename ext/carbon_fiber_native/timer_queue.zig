@@ -33,18 +33,18 @@ pub const TimerQueue = struct {
 
     allocator: std.mem.Allocator,
     entries: Heap,
-    actions: std.AutoHashMapUnmanaged(u64, TimerAction) = .{},
+    actions: std.AutoHashMapUnmanaged(u64, TimerAction) = .empty,
     next_token: u64 = 1,
 
     pub fn init(allocator: std.mem.Allocator) TimerQueue {
         return .{
             .allocator = allocator,
-            .entries = Heap.init(allocator, {}),
+            .entries = .empty,
         };
     }
 
     pub fn deinit(self: *TimerQueue) void {
-        self.entries.deinit();
+        self.entries.deinit(self.allocator);
         self.actions.deinit(self.allocator);
     }
 
@@ -53,7 +53,7 @@ pub const TimerQueue = struct {
         self.next_token += 1;
         try self.actions.put(self.allocator, token, action);
         errdefer _ = self.actions.remove(token);
-        try self.entries.add(.{ .deadline = deadline, .token = token });
+        try self.entries.push(self.allocator, .{ .deadline = deadline, .token = token });
         return token;
     }
 
@@ -77,7 +77,7 @@ pub const TimerQueue = struct {
         while (self.entries.peek()) |entry| {
             if (entry.deadline > now) return null;
 
-            _ = self.entries.remove();
+            _ = self.entries.pop();
             if (self.actions.fetchRemove(entry.token)) |removed| {
                 return removed.value;
             }
@@ -87,32 +87,17 @@ pub const TimerQueue = struct {
     }
 
     pub fn mark(self: *TimerQueue) void {
-        self.gcWalk(.mark);
-    }
-
-    pub fn compact(self: *TimerQueue) void {
-        self.gcWalk(.compact);
-    }
-
-    const GcMode = enum { mark, compact };
-
-    fn gcWalk(self: *TimerQueue, comptime mode: GcMode) void {
         var it = self.actions.iterator();
         while (it.next()) |entry| {
-            if (mode == .compact) {
-                entry.value_ptr.fiber = support.compactValue(entry.value_ptr.fiber);
-                entry.value_ptr.payload = support.compactValue(entry.value_ptr.payload);
-            } else {
-                support.markValue(entry.value_ptr.fiber);
-                support.markValue(entry.value_ptr.payload);
-            }
+            support.markValue(entry.value_ptr.fiber);
+            support.markValue(entry.value_ptr.payload);
         }
     }
 
     fn discardStale(self: *TimerQueue) void {
         while (self.entries.peek()) |entry| {
             if (self.actions.contains(entry.token)) break;
-            _ = self.entries.remove();
+            _ = self.entries.pop();
         }
     }
 };

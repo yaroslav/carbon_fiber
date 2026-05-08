@@ -33,7 +33,7 @@ jobs:
       - name: Install Zig
         if: ${{ !matrix.fallback }}
         run: |
-          ZIG_VERSION="0.15.2"
+          ZIG_VERSION="0.16.0"
           ZIG_ARCH=$(uname -m | sed 's/arm64/aarch64/')
           # Zig uses "macos" in download slugs, not "darwin" as uname reports.
           ZIG_OS=$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/macos/')

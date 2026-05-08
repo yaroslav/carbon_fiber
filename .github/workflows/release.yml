@@ -71,7 +71,7 @@ jobs:
       - name: Install Zig
         run: |
           ZIG_ARCH=$(uname -m | sed 's/arm64/aarch64/')
-          ZIG_VERSION="0.15.2"
+          ZIG_VERSION="0.16.0"
           curl -sSfL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ZIG_ARCH}-macos-${ZIG_VERSION}.tar.xz" \
             | tar xJ -C /tmp
           echo "/tmp/zig-${ZIG_ARCH}-macos-${ZIG_VERSION}" >> $GITHUB_PATH

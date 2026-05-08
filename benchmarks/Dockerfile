@@ -1,6 +1,6 @@
 FROM ruby:4.0.2-bookworm
 
-ARG ZIG_VERSION=0.15.2
+ARG ZIG_VERSION=0.16.0
 
 ENV PATH=/opt/zig:$PATH
 

@@ -169,15 +169,7 @@ module CarbonFiber
     # Intercept +Kernel#sleep+. Parks the fiber on a native timer.
     # @param duration [Float, nil] seconds to sleep; nil sleeps forever
     def kernel_sleep(duration = nil)
-      if duration.nil?
-        transfer
-      elsif duration <= 0
-        self.yield
-      else
-        block(nil, duration)
-      end
-
-      true
+      @selector.kernel_sleep(duration)
     end
 
     # Wait for I/O readiness on a file descriptor.
