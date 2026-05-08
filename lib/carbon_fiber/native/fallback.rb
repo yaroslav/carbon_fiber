@@ -124,6 +124,22 @@ module CarbonFiber
         flush_ready
       end
 
+      # Mirrors `Selector#kernel_sleep` on the native side so
+      # `Scheduler#kernel_sleep` can delegate to `@selector.kernel_sleep`
+      # in both paths. Branches on the duration: nil parks the fiber on
+      # the loop without a timer, non-positive yields, positive parks on
+      # a native timer for `duration` seconds.
+      def kernel_sleep(duration = nil)
+        if duration.nil?
+          transfer
+        elsif duration <= 0
+          self.yield
+        else
+          block(Fiber.current, duration)
+        end
+        true
+      end
+
       # Suspend the current fiber until unblocked or timed out.
       def block(fiber, timeout = nil)
         token = nil
