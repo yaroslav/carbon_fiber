@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.1.3] - 2026-05-08
 
 - Update to Zig 0.16.0; update libxev and zig.rb to the latest versions.
 - Performance improvements. README updated with latest numbers.

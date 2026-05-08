@@ -29,6 +29,6 @@ docker run --rm \
     bundle install --quiet &&
     zig build -Doptimize=ReleaseFast &&
     gem install async --install-dir /workspace/tmp/linux_gems/async --no-document &&
-    gem install carbon_fiber -v 0.1.2 --install-dir /workspace/tmp/linux_gems/carbon_published --no-document &&
+    gem install carbon_fiber -v 0.1.3 --install-dir /workspace/tmp/linux_gems/carbon_published --no-document &&
     ruby ./benchmarks/async_bench "$@"
   ' -- "$@"

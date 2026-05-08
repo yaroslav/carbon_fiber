@@ -11,7 +11,7 @@ module Bench
     # `require "carbon_fiber"` (not require_relative), so resolution comes
     # from the gem dir rather than the in-tree lib/.
     "carbon_published" => {
-      gems: [["carbon_fiber", "0.1.2"]],
+      gems: [["carbon_fiber", "0.1.3"]],
       require_proc: -> { require "carbon_fiber" },
       constant: "CarbonFiber::Scheduler"
     },
@@ -27,7 +27,7 @@ module Bench
     },
     "evt" => {
       gems: [["evt"]],
-      require_proc: -> {
+      require_proc: lambda {
         require "evt"
         # evt's io_wait returns true instead of the events bitmask Ruby expects
         Evt::Scheduler.prepend(Module.new do
@@ -42,7 +42,7 @@ module Bench
     },
     "fiber_scheduler" => {
       gems: [["fiber_scheduler"]],
-      require_proc: -> {
+      require_proc: lambda {
         require "fiber_scheduler"
         # Ruby 3.4 added 4th offset parameter to io_read/io_write
         FiberScheduler.prepend(Module.new do
@@ -60,7 +60,7 @@ module Bench
     },
     "libev" => {
       gems: [["libev_scheduler"]],
-      require_proc: -> {
+      require_proc: lambda {
         require "libev_scheduler"
         # libev's io_wait returns self instead of the events bitmask Ruby expects
         Libev::Scheduler.prepend(Module.new do
@@ -82,14 +82,20 @@ module Bench
   # default suite because they don't meaningfully differentiate schedulers
   # (see notes below).
   WORKLOADS = {
-    "http_client_api" => {defaults: {concurrency: 20, iterations: 200}, metric: "requests_per_second", unit: "req/s"},
-    "http_client_download" => {defaults: {concurrency: 20, iterations: 100}, metric: "downloads_per_second", unit: "dl/s"},
+    "http_client_api" => {defaults: {concurrency: 20, iterations: 200}, metric: "requests_per_second",
+                          unit: "req/s"},
+    "http_client_download" => {defaults: {concurrency: 20, iterations: 100}, metric: "downloads_per_second",
+                               unit: "dl/s"},
     "http_server" => {defaults: {concurrency: 20, iterations: 200}, metric: "requests_per_second", unit: "req/s"},
-    "tcp_echo" => {defaults: {concurrency: 20, iterations: 200, payload_bytes: 512}, metric: "operations_per_second", unit: "ops/s"},
-    "connection_pool" => {defaults: {concurrency: 50, iterations: 100}, metric: "checkouts_per_second", unit: "co/s"},
-    "fan_out_gather" => {defaults: {concurrency: 10, iterations: 100}, metric: "gather_cycles_per_second", unit: "cyc/s"},
+    "tcp_echo" => {defaults: {concurrency: 20, iterations: 200, payload_bytes: 512}, metric: "operations_per_second",
+                   unit: "ops/s"},
+    "connection_pool" => {defaults: {concurrency: 50, iterations: 100}, metric: "checkouts_per_second",
+                          unit: "co/s"},
+    "fan_out_gather" => {defaults: {concurrency: 10, iterations: 100}, metric: "gather_cycles_per_second",
+                         unit: "cyc/s"},
     "db_query_mix" => {defaults: {concurrency: 20, iterations: 100}, metric: "queries_per_second", unit: "qry/s"},
-    "cascading_timeout" => {defaults: {concurrency: 20, iterations: 200}, metric: "operations_per_second", unit: "ops/s"},
+    "cascading_timeout" => {defaults: {concurrency: 20, iterations: 200}, metric: "operations_per_second",
+                            unit: "ops/s"},
     "mixed_io_sizes" => {defaults: {concurrency: 20, iterations: 50}, metric: "bytes_per_second", unit: "B/s"},
     "websocket_idle" => {defaults: {concurrency: 50, iterations: 100}, metric: "pings_per_second", unit: "ping/s"},
     "dns_fanout" => {defaults: {concurrency: 20, iterations: 50}, metric: "resolutions_per_second", unit: "res/s"}

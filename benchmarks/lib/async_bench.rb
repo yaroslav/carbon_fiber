@@ -6,7 +6,7 @@ module AsyncBench
       setup: -> {}
     },
     "carbon" => {
-      setup: -> {
+      setup: lambda {
         require_relative "../../lib/carbon_fiber"
         require "async"
         require_relative "../../lib/carbon_fiber/async"
@@ -17,8 +17,8 @@ module AsyncBench
     # against the local source. async_bench_one scopes GEM_HOME per-target,
     # so `require "carbon_fiber"` resolves from the installed gem.
     "carbon_published" => {
-      gems: [["carbon_fiber", "0.1.2"]],
-      setup: -> {
+      gems: [["carbon_fiber", "0.1.3"]],
+      setup: lambda {
         require "carbon_fiber"
         require "async"
         require "carbon_fiber/async"
@@ -34,16 +34,24 @@ module AsyncBench
   # the headline default suite because they don't meaningfully differentiate
   # backends (see notes below).
   WORKLOADS = {
-    "http_client_api" => {defaults: {concurrency: 20, iterations: 200}, metric: "requests_per_second", unit: "req/s"},
-    "http_client_download" => {defaults: {concurrency: 10, iterations: 20, response_bytes: 262_144}, metric: "downloads_per_second", unit: "dl/s"},
+    "http_client_api" => {defaults: {concurrency: 20, iterations: 200}, metric: "requests_per_second",
+                          unit: "req/s"},
+    "http_client_download" => {defaults: {concurrency: 10, iterations: 20, response_bytes: 262_144},
+                               metric: "downloads_per_second", unit: "dl/s"},
     "task_churn" => {defaults: {batch_size: 100, iterations: 200}, metric: "tasks_per_second", unit: "task/s"},
-    "barrier_fanout" => {defaults: {coordinators: 10, fan_width: 10, iterations: 100}, metric: "cycles_per_second", unit: "cyc/s"},
+    "barrier_fanout" => {defaults: {coordinators: 10, fan_width: 10, iterations: 100}, metric: "cycles_per_second",
+                         unit: "cyc/s"},
     "sleep_storm" => {defaults: {fibers: 200, iterations: 50}, metric: "sleeps_per_second", unit: "slp/s"},
-    "pipe_pipeline" => {defaults: {stages: 5, messages: 500, payload: 512}, metric: "messages_per_second", unit: "msg/s"},
-    "condition_signal" => {defaults: {producers: 5, consumers: 20, messages: 200}, metric: "signals_per_second", unit: "sig/s"},
-    "connection_pool" => {defaults: {concurrency: 50, iterations: 100}, metric: "checkouts_per_second", unit: "co/s"},
-    "cascading_timeout" => {defaults: {concurrency: 20, iterations: 200}, metric: "operations_per_second", unit: "ops/s"},
-    "tcp_throughput" => {defaults: {clients: 10, iterations: 200, payload: 512}, metric: "operations_per_second", unit: "ops/s"}
+    "pipe_pipeline" => {defaults: {stages: 5, messages: 500, payload: 512}, metric: "messages_per_second",
+                        unit: "msg/s"},
+    "condition_signal" => {defaults: {producers: 5, consumers: 20, messages: 200}, metric: "signals_per_second",
+                           unit: "sig/s"},
+    "connection_pool" => {defaults: {concurrency: 50, iterations: 100}, metric: "checkouts_per_second",
+                          unit: "co/s"},
+    "cascading_timeout" => {defaults: {concurrency: 20, iterations: 200}, metric: "operations_per_second",
+                            unit: "ops/s"},
+    "tcp_throughput" => {defaults: {clients: 10, iterations: 200, payload: 512}, metric: "operations_per_second",
+                         unit: "ops/s"}
   }.freeze
 
   # Workloads included in the default core run.  Each entry exercises the
