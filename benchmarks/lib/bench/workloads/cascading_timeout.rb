@@ -28,7 +28,12 @@ module Bench
               slow = ((iter * 7 + index * 3) % 10) < 3
 
               begin
-                Fiber.scheduler.timeout_after(TIMEOUT_DURATION, Timeout::Error, "benchmark timeout") do
+                # `Timeout.timeout` dispatches to `Fiber.scheduler.timeout_after`
+                # when the scheduler implements it, otherwise falls back to a
+                # Thread-based timer; this keeps the workload portable across
+                # schedulers that haven't adopted the (non-protocol)
+                # `timeout_after` extension yet (e.g. Itsi).
+                Timeout.timeout(TIMEOUT_DURATION, Timeout::Error, "benchmark timeout") do
                   sleep(slow ? SLOW_WORK : FAST_WORK)
                   local_completed += 1
                 end
