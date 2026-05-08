@@ -30,6 +30,7 @@ docker run --rm \
   "${UPSTREAM_MOUNT[@]}" \
   -w /workspace \
   -e BENCH_GEM_HOME=/workspace/tmp/linux_gems \
-  -e RUBYOPT=--yjit \
+  -e RUBYOPT="${BENCH_RUBYOPT:---yjit}" \
+  -e BENCH_TIMEOUT \
   carbon-fiber-bench \
   bash -c 'bundle install --quiet && zig build -Doptimize=ReleaseFast && ruby ./benchmarks/bench --setup "$@" && ruby ./benchmarks/bench "$@"' -- "$@"

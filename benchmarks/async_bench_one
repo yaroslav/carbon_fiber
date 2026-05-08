@@ -14,12 +14,18 @@ workload_id = ARGV[1] or abort("usage: async_bench_one <target> <workload>")
 target = AsyncBench::TARGETS.fetch(target_id) { abort("unknown target: #{target_id}") }
 workload_def = AsyncBench::WORKLOADS.fetch(workload_id) { abort("unknown workload: #{workload_id}") }
 
-# Set up gem path for async
+# Set up gem paths. Async always lives in gem_home/async; targets that
+# declare `gems:` (e.g. carbon_published) install into gem_home/<target_id>
+# and need that dir on GEM_PATH alongside async.
 gem_home = ENV["BENCH_GEM_HOME"] || File.join(__dir__, ".gems")
+gem_paths = []
 async_home = File.join(gem_home, "async")
-if Dir.exist?(async_home)
-  ENV["GEM_HOME"] = async_home
-  ENV["GEM_PATH"] = async_home
+gem_paths << async_home if Dir.exist?(async_home)
+target_home = File.join(gem_home, target_id)
+gem_paths << target_home if Dir.exist?(target_home)
+unless gem_paths.empty?
+  ENV["GEM_HOME"] = gem_paths.first
+  ENV["GEM_PATH"] = gem_paths.join(File::PATH_SEPARATOR)
   Gem.clear_paths
 end
 

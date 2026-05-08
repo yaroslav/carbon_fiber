@@ -14,20 +14,23 @@
 
 require "optparse"
 require "timeout"
+require "bundler"
 require_relative "lib/async_bench"
 
 # --- CLI ---
 
 targets = nil
 workloads = nil
-runs = 1
+runs = 3
+warmup = 1
 timeout = Integer(ENV.fetch("BENCH_TIMEOUT", 30))
 
 OptionParser.new do |opts|
   opts.banner = "Usage: async_bench [options]"
   opts.on("-t", "--targets LIST", "Comma-separated target IDs") { |v| targets = v.split(",") }
   opts.on("-w", "--workloads LIST", "Comma-separated workload IDs") { |v| workloads = v.split(",") }
-  opts.on("-r", "--runs N", Integer, "Number of runs per combo (default: 1)") { |v| runs = v }
+  opts.on("-r", "--runs N", Integer, "Number of runs per combo (default: 3)") { |v| runs = v }
+  opts.on("--warmup N", Integer, "Discard the first N runs as warmup (default: 1)") { |v| warmup = v }
   opts.on("--timeout N", Integer, "Per-workload timeout in seconds (default: 30)") { |v| timeout = v }
 end.parse!
 
@@ -48,33 +51,47 @@ bench_one = File.join(__dir__, "async_bench_one")
 gem_home = ENV["BENCH_GEM_HOME"] || File.join(__dir__, ".gems")
 results = {}
 
-warn "Async bench: #{targets.size} target(s) × #{workloads.size} workload(s) × #{runs} run(s)"
+total_runs = warmup + runs
+warn "Async bench: #{targets.size} target(s) × #{workloads.size} workload(s) × #{total_runs} run(s)" \
+     "#{" (#{warmup} warmup, #{runs} measured)" if warmup.positive?}"
 warn ""
 
-runs.times do |run|
-  $stderr.print "Run #{run + 1}/#{runs}: " if runs > 1
+total_runs.times do |run|
+  is_warmup = run < warmup
+  label = is_warmup ? "Warmup" : "Run"
+  index = is_warmup ? run + 1 : run - warmup + 1
+  total = is_warmup ? warmup : runs
+  $stderr.print "#{label} #{index}/#{total}: " if total_runs > 1
   targets.each do |t|
     workloads.each do |w|
       $stderr.print "#{t}/#{w} "
 
       rd, wr = IO.pipe
       env = {"BENCH_GEM_HOME" => gem_home}
-      pid = Process.spawn(env, RbConfig.ruby, bench_one, t, w, out: wr, err: "/dev/null")
+      # See bench's spawn site for why we strip Bundler's env: if this
+      # script runs under `bundle exec`, RUBYOPT inherits `-rbundler/setup`
+      # which restricts the child's $LOAD_PATH to the project Gemfile and
+      # breaks per-target gem requires.
+      pid = Bundler.with_unbundled_env do
+        Process.spawn(env, RbConfig.ruby, bench_one, t, w, out: wr, err: "/dev/null")
+      end
       wr.close
 
       begin
         Timeout.timeout(timeout) { Process.wait(pid) }
         if $?.success?
           value = rd.read.strip.to_f
-          results[[t, w]] = [] unless results[[t, w]].is_a?(Array)
-          results[[t, w]] << value
+          unless is_warmup
+            results[[t, w]] = [] unless results[[t, w]].is_a?(Array)
+            results[[t, w]] << value
+          end
         else
-          results[[t, w]] ||= :error
+          results[[t, w]] ||= :error unless is_warmup
         end
       rescue Timeout::Error
         Process.kill("KILL", pid)
         Process.wait(pid)
-        results[[t, w]] ||= :timeout
+        results[[t, w]] ||= :timeout unless is_warmup
       ensure
         rd.close
       end
@@ -83,33 +100,45 @@ runs.times do |run|
   $stderr.puts
 end
 
-# --- Compute medians ---
+# --- Compute summaries (median, coefficient of variation) ---
 
 medians = {}
+cvs = {}
 results.each do |key, val|
-  medians[key] = if val.is_a?(Array) && !val.empty?
+  if val.is_a?(Array) && !val.empty?
     sorted = val.sort
-    sorted[sorted.size / 2]
+    medians[key] = sorted[sorted.size / 2]
+    if sorted.size >= 2
+      mean = sorted.sum.to_f / sorted.size
+      variance = sorted.sum { |x| (x - mean)**2 } / sorted.size
+      stddev = Math.sqrt(variance)
+      cvs[key] = mean.zero? ? 0.0 : (stddev / mean * 100)
+    end
   else
-    val
+    medians[key] = val
   end
 end
 
 # --- Print markdown table ---
 
-def format_cell(value, unit)
+def format_cell(value, unit, cv = nil)
   return "error" if value == :error
   return "timeout" if value == :timeout
 
-  "#{AsyncBench.fmt(value)} #{unit}"
+  base = "#{AsyncBench.fmt(value)} #{unit}"
+  return base if cv.nil?
+  "#{base} ±#{format("%.1f", cv)}%"
 end
 
-def format_delta(baseline, current)
+def format_delta(baseline, current, baseline_cv = nil, current_cv = nil)
   return "" if !baseline.is_a?(Numeric) || !current.is_a?(Numeric) || baseline.zero?
 
   pct = ((current - baseline) / baseline.abs) * 100
   sign = (pct >= 0) ? "+" : ""
-  "#{sign}#{format("%.1f", pct)}%"
+  out = "#{sign}#{format("%.1f", pct)}%"
+  noise = [baseline_cv, current_cv].compact.max
+  out += " (noisy)" if noise && pct.abs <= noise
+  out
 end
 
 best_per_workload = {}
@@ -132,7 +161,7 @@ cells = {}
 workloads.each do |w|
   unit = AsyncBench::WORKLOADS[w][:unit]
   targets.each do |t|
-    cell = format_cell(medians[[t, w]], unit)
+    cell = format_cell(medians[[t, w]], unit, cvs[[t, w]])
     cell = "**#{cell}**" if t == best_per_workload[w]
     cells[[t, w]] = cell
   end
@@ -147,7 +176,8 @@ delta_width = 0
 
 if show_delta
   deltas = workloads.map do |w|
-    format_delta(medians[[targets[0], w]], medians[[targets[1], w]])
+    format_delta(medians[[targets[0], w]], medians[[targets[1], w]],
+      cvs[[targets[0], w]], cvs[[targets[1], w]])
   end
   delta_width = [5, *deltas.map(&:size)].max
 end
@@ -168,7 +198,8 @@ workloads.each do |w|
   targets.each_with_index { |t, i| row += " #{cells[[t, w]].rjust(col_widths[i])} |" }
 
   if show_delta
-    delta = format_delta(medians[[targets[0], w]], medians[[targets[1], w]])
+    delta = format_delta(medians[[targets[0], w]], medians[[targets[1], w]],
+      cvs[[targets[0], w]], cvs[[targets[1], w]])
     row += " #{delta.rjust(delta_width)} |"
   end
 

@@ -46,7 +46,7 @@ Orchestrator. Spawns each (target, workload) combination as an isolated subproce
 Usage: bench [options]
     -t, --targets LIST     Comma-separated target IDs (default: all)
     -w, --workloads LIST   Comma-separated workload IDs (default: all)
-    -r, --runs N           Number of runs per combo, takes median (default: 1)
+    -r, --runs N           Number of runs per combo, takes median (default: 3)
         --timeout N        Per-workload timeout in seconds (default: 30)
         --setup            Install target gems and exit
 ```
@@ -61,6 +61,8 @@ Environment variables:
 Output goes to stdout (the table). Progress and setup messages go to stderr.
 
 When exactly 2 targets are specified, a delta column shows the percentage change from the first target to the second.
+
+When `runs >= 2`, each cell is annotated with the coefficient of variation (e.g. `±2.5%`), and the delta column tags entries as `(noisy)` when the magnitude of the change is within either target's CV. Use this to tell genuine regressions/wins from run-to-run jitter.
 
 ### `benchmarks/bench_one`
 
@@ -163,7 +165,7 @@ Orchestrator for async benchmarks. Same CLI interface as `bench`.
 Usage: async_bench [options]
     -t, --targets LIST     Comma-separated target IDs: stock, carbon (default: all)
     -w, --workloads LIST   Comma-separated workload IDs (default: all)
-    -r, --runs N           Number of runs per combo, takes median (default: 1)
+    -r, --runs N           Number of runs per combo, takes median (default: 3)
         --timeout N        Per-workload timeout in seconds (default: 30)
 ```
 
