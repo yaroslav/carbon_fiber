@@ -20,14 +20,9 @@ task :sync_version do
   end
 end
 
-# Zig 0.15's Mach-O linker has issues with Xcode 26.4
-#  - https://codeberg.org/ziglang/zig/pulls/31673
-#  - https://codeberg.org/ziglang/zig/issues/31658
-# Workaround: DEVELOPER_DIR=/dev/null makes Zig use its bundled libSystem.tbd.
 desc "Compile the Zig native extension (also syncs version)"
 task compile: :sync_version do
-  env = RUBY_PLATFORM.include?("darwin") ? {"DEVELOPER_DIR" => "/dev/null"} : {}
-  sh env, "zig", "build", "-Doptimize=ReleaseFast"
+  sh "zig", "build", "-Doptimize=ReleaseFast"
   fix_macos_install_names if RUBY_PLATFORM.include?("darwin")
 end
 
@@ -57,12 +52,18 @@ def fix_macos_install_names
       sh "install_name_tool", "-delete_rpath", rpath, bundle if rpath.start_with?("/")
     end
 
+    # Add a portable rpath so the bundle can locate libruby on any host.
+    unless rpaths.include?("@executable_path/../lib")
+      sh "install_name_tool", "-add_rpath", "@executable_path/../lib", bundle
+    end
+
     sh "codesign", "--sign", "-", "--force", bundle
 
     final_libs = `otool -L #{bundle.shellescape}`
     leaked = final_libs.lines.find do |l|
       next false unless l.start_with?("\t/")
       next false if l.match?(%r{^\t/usr/lib/}) || l.match?(%r{^\t/System/})
+
       true
     end
     raise "Non-portable dylib in #{bundle}: #{leaked.strip}\n\n#{final_libs}" if leaked
@@ -73,26 +74,26 @@ def fix_macos_install_names
   end
 end
 
-ZIG_VERSION = "0.15.2"
+ZIG_VERSION = "0.16.0"
 
 # Ruby versions to compile for. Full version must exactly match the directory
 # name inside the RCD image: docker run --rm <image> ls /usr/local/rake-compiler/ruby/x86_64-linux-gnu/
 RUBY_CROSS_VERSIONS = [
   {full: "3.4.8", api: "3.4.0"},
   {full: "4.0.0", api: "4.0.0"}
-]
+].freeze
 
 # [gem_platform_name, rcd_platform (image suffix), zig_target_triple]
 # rcd_platform also names the dir inside the RCD container *most* of the time;
 # scripts/rcd_build.sh discovers the actual path because the x86_64-musl image
 # uses x86_64-unknown-linux-musl as its top dir.
 LINUX_PLATFORMS = [
-  ["x86_64-linux", "x86_64-linux-gnu", "x86_64-linux-gnu"],
-  ["aarch64-linux", "aarch64-linux-gnu", "aarch64-linux-gnu"],
-  ["x86_64-linux-musl", "x86_64-linux-musl", "x86_64-linux-musl"],
-  ["aarch64-linux-musl", "aarch64-linux-musl", "aarch64-linux-musl"]
-]
-DARWIN_PLATFORMS = %w[arm64-darwin]
+  %w[x86_64-linux x86_64-linux-gnu x86_64-linux-gnu],
+  %w[aarch64-linux aarch64-linux-gnu aarch64-linux-gnu],
+  %w[x86_64-linux-musl x86_64-linux-musl x86_64-linux-musl],
+  %w[aarch64-linux-musl aarch64-linux-musl aarch64-linux-musl]
+].freeze
+DARWIN_PLATFORMS = %w[arm64-darwin].freeze
 ALL_PLATFORMS = LINUX_PLATFORMS.map(&:first) + DARWIN_PLATFORMS
 
 # Cross-compile tasks
@@ -103,11 +104,11 @@ namespace :cross do
       task gem_platform do
         require "rake_compiler_dock"
 
-        build_cmds = RUBY_CROSS_VERSIONS.map { |r|
+        build_cmds = RUBY_CROSS_VERSIONS.map do |r|
           "RUBY_FULL_VERSION=#{r[:full]} RUBY_API_VERSION=#{r[:api]} " \
           "RCD_PLATFORM=#{rcd_platform} TARGET_TRIPLE=#{zig_triple} " \
           "ZIG_VERSION=#{ZIG_VERSION} bash scripts/rcd_build.sh"
-        }.join(" && ")
+        end.join(" && ")
 
         RakeCompilerDock.sh(build_cmds, platform: rcd_platform)
       end
@@ -132,7 +133,7 @@ def build_platform_gem(platform)
 
   spec = Gem::Specification.load("carbon_fiber.gemspec")
   spec.platform = Gem::Platform.new(platform)
-  spec.extensions = []  # pre-built; no compilation on install
+  spec.extensions = [] # pre-built; no compilation on install
 
   ext = platform.include?("darwin") ? "bundle" : "so"
   files = Dir["lib/**/*.rb"].reject { |f| File.directory?(f) } +
@@ -210,4 +211,4 @@ task :lint do
 end
 
 desc "Compile native extension and run specs"
-task default: [:compile, :spec]
+task default: %i[compile spec]
