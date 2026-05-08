@@ -13,7 +13,16 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const rb_module = zig_rb_dep.module("zig_rb");
+    // zig_rb's exposed module has a `linkSystemLibrary("ruby")` baked in
+    // for its own test runner; consuming it pulls libruby into our .so's
+    // NEEDED list, which conflicts with the system libruby on hosts that
+    // also ship Ruby (e.g. ubuntu-latest). Build a fresh module from the
+    // same source to avoid that propagation.
+    const rb_module = b.createModule(.{
+        .root_source_file = zig_rb_dep.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     const fibers_module = b.createModule(.{
         .root_source_file = b.path("ext/carbon_fiber_native/main.zig"),
