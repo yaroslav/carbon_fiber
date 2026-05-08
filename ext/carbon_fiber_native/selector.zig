@@ -61,6 +61,26 @@ const SPIN_THRESHOLD: f64 = 0.003;
 // 1024+, but active fd counts rarely exceed ~200 on a single scheduler).
 const DESCRIPTOR_CACHE_SIZE: usize = 256;
 
+// Replacement for std.Thread.Mutex, which Zig 0.16 relocated to std.Io.Mutex
+// and made dependent on an std.Io context we do not have here. Cross-thread
+// critical sections in this file are tiny (append a single ReadyEntry, drain
+// a short list), and contention is the rare case since same-thread enqueue
+// goes through the no-mutex path. A tryLock + Thread.yield loop over
+// std.atomic.Mutex is enough; the kernel handles backoff.
+const ThreadMutex = struct {
+    inner: std.atomic.Mutex = .unlocked,
+
+    fn lock(self: *ThreadMutex) void {
+        while (!self.inner.tryLock()) {
+            std.Thread.yield() catch {};
+        }
+    }
+
+    fn unlock(self: *ThreadMutex) void {
+        self.inner.unlock();
+    }
+};
+
 const Direction = enum(u1) { read = 0, write = 1 };
 
 const ReadyEntry = struct {
@@ -90,7 +110,7 @@ const Descriptor = struct {
     in_map: bool = false,
     closed: bool = false,
 
-    fn pollFor(self: *Descriptor, comptime dir: Direction) *PollState {
+    inline fn pollFor(self: *Descriptor, comptime dir: Direction) *PollState {
         return &self.poll[@intFromEnum(dir)];
     }
 
@@ -144,17 +164,17 @@ pub const Selector = struct {
 
     timers: TimerQueue = undefined,
 
-    descriptors: std.AutoHashMapUnmanaged(std.posix.fd_t, *Descriptor) = .{},
-    retired_descriptors: std.ArrayListUnmanaged(*Descriptor) = .{},
-    process_waits: std.ArrayListUnmanaged(*ProcessWait) = .{},
-    retired_process_waits: std.ArrayListUnmanaged(*ProcessWait) = .{},
+    descriptors: std.AutoHashMapUnmanaged(std.posix.fd_t, *Descriptor) = .empty,
+    retired_descriptors: std.ArrayListUnmanaged(*Descriptor) = .empty,
+    process_waits: std.ArrayListUnmanaged(*ProcessWait) = .empty,
+    retired_process_waits: std.ArrayListUnmanaged(*ProcessWait) = .empty,
     active_waiters: usize = 0,
 
-    ready_entries: std.ArrayListUnmanaged(ReadyEntry) = .{},
+    ready_entries: std.ArrayListUnmanaged(ReadyEntry) = .empty,
     ready_head: usize = 0,
 
-    cross_thread_mutex: std.Thread.Mutex = .{},
-    cross_thread_entries: std.ArrayListUnmanaged(ReadyEntry) = .{},
+    cross_thread_mutex: ThreadMutex = .{},
+    cross_thread_entries: std.ArrayListUnmanaged(ReadyEntry) = .empty,
     cross_thread_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     // Tracks every fiber that is voluntarily parked via block() or an I/O wait
@@ -171,7 +191,7 @@ pub const Selector = struct {
     //   2. raise() reads the timer token to cancel any pending block timeout
     //      before enqueuing the exception — otherwise the longjmp bypasses
     //      block()'s cleanup and the dangling timer keeps hasPending() true.
-    blocked_fibers: std.AutoHashMapUnmanaged(crb.VALUE, u64) = .{},
+    blocked_fibers: std.AutoHashMapUnmanaged(crb.VALUE, u64) = .empty,
 
     // Per-fd consecutive EAGAIN miss counter for the recvOnce probe in ioRead.
     // Indexed by fd & 0xFF. When a probe misses PROBE_SKIP_THRESHOLD times in a
@@ -208,7 +228,10 @@ pub const Selector = struct {
                 .dmark = &selectorMark,
                 .dfree = &selectorFree,
                 .dsize = null,
-                .dcompact = &selectorCompact,
+                // No dcompact: markValue uses rb_gc_mark_maybe which pins
+                // the marked VALUEs in place, so compaction never moves
+                // anything we hold and we don't need a relocation pass.
+                .dcompact = null,
                 .reserved = .{null},
             },
             .parent = null,
@@ -233,7 +256,7 @@ pub const Selector = struct {
         /// Set up the event loop and ready queue. Called once per Selector.
         pub fn initialize(self: *Self, loop_fiber_val: Value) Value {
             if (!self.initialized) {
-                self.setup(std.heap.c_allocator, loop_fiber_val.toRaw()) catch
+                self.setup(std.heap.c_allocator, loop_fiber_val.asRaw()) catch
                     Error.raiseRuntimeError("Failed to initialize CarbonFiber::Native::Selector");
             }
             return Value.nil;
@@ -255,7 +278,7 @@ pub const Selector = struct {
         /// Enqueue a fiber into the ready queue (thread-safe).
         pub fn push(self: *Self, fiber_val: Value) Value {
             self.ensureInitialized();
-            const fiber = fiber_val.toRaw();
+            const fiber = fiber_val.asRaw();
             if (support.rb_thread_current() == self.scheduler_thread) {
                 // Same thread: direct enqueue, no locking needed
                 self.enqueue(.resume_fiber, fiber, crb.Qnil) catch
@@ -265,7 +288,7 @@ pub const Selector = struct {
                 self.enqueueCrossThread(.{
                     .kind = .resume_fiber,
                     .fiber = fiber,
-                    .payload = Value.from(true).toRaw(),
+                    .payload = Value.from(true).asRaw(),
                 }) catch Error.raiseRuntimeError("Failed to enqueue fiber (cross-thread)");
                 if (self.blocked.load(.acquire)) {
                     self.async_handle.notify() catch
@@ -279,8 +302,8 @@ pub const Selector = struct {
         /// background threads via Scheduler#await_background_operation.
         pub fn @"resume"(self: *Self, fiber_val: Value, value_val: Value) Value {
             self.ensureInitialized();
-            const fiber = fiber_val.toRaw();
-            const payload = value_val.toRaw();
+            const fiber = fiber_val.asRaw();
+            const payload = value_val.asRaw();
             if (support.rb_thread_current() == self.scheduler_thread) {
                 self.enqueue(.resume_fiber, fiber, payload) catch
                     Error.raiseRuntimeError("Failed to enqueue resume");
@@ -302,7 +325,7 @@ pub const Selector = struct {
         /// Cancels any pending block timeout.
         pub fn raise(self: *Self, fiber_val: Value, exception_val: Value) Value {
             self.ensureInitialized();
-            const fiber = fiber_val.toRaw();
+            const fiber = fiber_val.asRaw();
             // Cancel any pending block() timeout for this fiber. If we don't do
             // this, the longjmp that delivers the exception bypasses the cancel
             // call in block(), leaving a dangling timer that
@@ -315,7 +338,7 @@ pub const Selector = struct {
                     token_ptr.* = 0; // clear so block()'s cleanup doesn't double-cancel
                 }
             }
-            self.enqueue(.raise, fiber, exception_val.toRaw()) catch
+            self.enqueue(.raise, fiber, exception_val.asRaw()) catch
                 Error.raiseRuntimeError("Failed to enqueue raise");
             return fiber_val;
         }
@@ -360,11 +383,41 @@ pub const Selector = struct {
             return self.doTransferToLoop(current);
         }
 
+        /// Native implementation of the Fiber Scheduler #kernel_sleep hook.
+        /// Replaces the three-way Ruby branch in CarbonFiber::Scheduler so
+        /// the hot path on every `sleep(...)` call from user code goes from
+        /// Ruby straight into native, skipping the Ruby proxy method frame.
+        /// Mirrors the semantics in CarbonFiber::Scheduler#kernel_sleep:
+        /// nil yields to the loop, non-positive sleeps re-queue the current
+        /// fiber, positive durations park on a native timer. Always returns
+        /// Qtrue to match the Ruby version.
+        pub fn kernel_sleep(self: *Self, duration_val: Value) Value {
+            _ = Self.InstanceMethods.kernelSleepImpl(self, duration_val);
+            return Value.from(true);
+        }
+
+        // Shared body so kernel_sleep can call sibling methods (transfer /
+        // yield / block) without the Zig method-syntax dance. Returns nil to
+        // discard the inner methods' return values; kernel_sleep only cares
+        // about side effects.
+        fn kernelSleepImpl(self: *Self, duration_val: Value) Value {
+            self.ensureInitialized();
+            if (duration_val.isNil()) {
+                return Self.InstanceMethods.transfer(self);
+            }
+            const duration = floatFromValue(duration_val, 0.0);
+            if (duration <= 0.0) {
+                return Self.InstanceMethods.@"yield"(self);
+            }
+            return Self.InstanceMethods.block(self, Value.fromRaw(support.rb_fiber_current()), duration_val);
+        }
+
+
         /// Run one event loop iteration. Flushes ready fibers, polls for I/O.
         pub fn select(self: *Self, timeout_val: Value) Value {
             self.ensureInitialized();
             const timeout = if (timeout_val.isNil()) null else floatFromValue(timeout_val, null);
-            return Value.from(self.doSelect(timeout) catch
+            return support.intValue(self.doSelect(timeout) catch
                 Error.raiseRuntimeError("selector.select failed"));
         }
 
@@ -372,13 +425,13 @@ pub const Selector = struct {
         pub fn block(self: *Self, fiber_val: Value, timeout_val: Value) Value {
             self.ensureInitialized();
 
-            const fiber = fiber_val.toRaw();
+            const fiber = fiber_val.asRaw();
             const timeout = if (timeout_val.isNil()) null else floatFromValue(timeout_val, null);
             var timer_token: u64 = 0; // 0 = no timer
 
             if (timeout) |seconds| {
                 if (seconds >= 0.0 and std.math.isFinite(seconds)) {
-                    timer_token = self.scheduleTimer(.resume_fiber, fiber, Value.from(false).toRaw(), seconds, null) catch
+                    timer_token = self.scheduleTimer(.resume_fiber, fiber, Value.from(false).asRaw(), seconds, null) catch
                         Error.raiseRuntimeError("Failed to schedule block timeout");
                 }
             }
@@ -412,7 +465,7 @@ pub const Selector = struct {
         /// hasPending() true and the scheduler loops forever.
         pub fn cancel_block_timer(self: *Self, fiber_val: Value) Value {
             if (!self.initialized) return Value.nil;
-            const fiber = fiber_val.toRaw();
+            const fiber = fiber_val.asRaw();
             // Remove from blocked set (so flushReady doesn't mistake a dead
             // fiber for a live voluntarily-sleeping one) and cancel any
             // pending sleep timer if still armed.
@@ -425,7 +478,7 @@ pub const Selector = struct {
         /// Resume a fiber previously suspended by block() (thread-safe).
         pub fn unblock(self: *Self, fiber_val: Value) Value {
             self.ensureInitialized();
-            const fiber = fiber_val.toRaw();
+            const fiber = fiber_val.asRaw();
             if (support.rb_thread_current() == self.scheduler_thread) {
                 // Same thread: direct enqueue, no locking or notify needed.
                 // Thread::Queue#push, Mutex#unlock etc. call unblock from the
@@ -433,13 +486,13 @@ pub const Selector = struct {
                 // the blocked fiber live in the same scheduler.
                 // The GVL is held, so the scheduler will drain ready_entries
                 // in its next flushReady before blocking.
-                self.enqueue(.resume_fiber, fiber, Value.from(true).toRaw()) catch
+                self.enqueue(.resume_fiber, fiber, Value.from(true).asRaw()) catch
                     Error.raiseRuntimeError("Failed to enqueue unblock");
             } else {
                 self.enqueueCrossThread(.{
                     .kind = .resume_fiber,
                     .fiber = fiber,
-                    .payload = Value.from(true).toRaw(),
+                    .payload = Value.from(true).asRaw(),
                 }) catch Error.raiseRuntimeError("Failed to enqueue unblock (cross-thread)");
                 // Only notify when the selector is blocked in kevent/io_uring.
                 // If not blocked, the scheduler thread holds the GVL and will
@@ -457,9 +510,9 @@ pub const Selector = struct {
         pub fn raise_after(self: *Self, fiber_val: Value, exception_val: Value, duration_val: Value) Value {
             self.ensureInitialized();
             const duration = floatFromValue(duration_val, 0.0);
-            const token = self.scheduleTimer(.raise, fiber_val.toRaw(), exception_val.toRaw(), duration, null) catch
+            const token = self.scheduleTimer(.raise, fiber_val.asRaw(), exception_val.asRaw(), duration, null) catch
                 Error.raiseRuntimeError("Failed to schedule raise_after");
-            return Value.from(token);
+            return support.intValue(token);
         }
 
         /// Cancel a pending timer by token. Returns true if cancelled,
@@ -474,7 +527,7 @@ pub const Selector = struct {
         /// Returns readiness bitmask or nil.
         pub fn io_wait(self: *Self, fiber_val: Value, fd_val: Value, events_val: Value) Value {
             self.ensureInitialized();
-            const fiber = fiber_val.toRaw();
+            const fiber = fiber_val.asRaw();
             const fd = integerFromValue(i32, fd_val, "expected fd");
             const events = integerFromValue(i16, events_val, "expected io_wait events");
             return self.ioWait(fiber, fd, events, null) catch
@@ -485,7 +538,7 @@ pub const Selector = struct {
         /// Returns false on timeout.
         pub fn io_wait_with_timeout(self: *Self, fiber_val: Value, fd_val: Value, events_val: Value, timeout_val: Value) Value {
             self.ensureInitialized();
-            const fiber = fiber_val.toRaw();
+            const fiber = fiber_val.asRaw();
             const fd = integerFromValue(i32, fd_val, "expected fd");
             const events = integerFromValue(i16, events_val, "expected io_wait events");
             const timeout = floatFromValue(timeout_val, null);
@@ -501,7 +554,7 @@ pub const Selector = struct {
         pub fn io_wait_object(self: *Self, io_val: Value, events_val: Value, timeout_val: Value) Value {
             self.ensureInitialized();
             const fiber = support.rb_fiber_current();
-            const fd: i32 = @intCast(support.rb_io_descriptor(io_val.toRaw()));
+            const fd: i32 = @intCast(support.rb_io_descriptor(io_val.asRaw()));
             const events = integerFromValue(i16, events_val, "expected io_wait events");
             const timeout: ?f64 = if (timeout_val.isNil()) null else floatFromValue(timeout_val, null);
             return self.ioWait(fiber, fd, events, timeout) catch
@@ -512,7 +565,7 @@ pub const Selector = struct {
         pub fn io_close(self: *Self, fd_val: Value, exception_val: Value) Value {
             self.ensureInitialized();
             const fd = integerFromValue(i32, fd_val, "expected fd");
-            self.ioClose(fd, exception_val.toRaw()) catch
+            self.ioClose(fd, exception_val.asRaw()) catch
                 Error.raiseRuntimeError("selector.io_close failed");
             return Value.from(true);
         }
@@ -535,7 +588,7 @@ pub const Selector = struct {
         /// extract (non-IO object), letting the Ruby caller fall back.
         pub fn io_read_object(self: *Self, io_val: Value, buffer_val: Value, length_val: Value, offset_val: Value) Value {
             self.ensureInitialized();
-            const fd: i32 = @intCast(support.rb_io_descriptor(io_val.toRaw()));
+            const fd: i32 = @intCast(support.rb_io_descriptor(io_val.asRaw()));
             const length = integerFromValue(usize, length_val, "expected read length");
             const offset = integerFromValue(usize, offset_val, "expected read offset");
             return self.ioRead(fd, buffer_val, length, offset) catch
@@ -557,7 +610,7 @@ pub const Selector = struct {
         /// rationale as io_read_object — skip the Ruby-side fileno dance.
         pub fn io_write_object(self: *Self, io_val: Value, buffer_val: Value, length_val: Value, offset_val: Value) Value {
             self.ensureInitialized();
-            const fd: i32 = @intCast(support.rb_io_descriptor(io_val.toRaw()));
+            const fd: i32 = @intCast(support.rb_io_descriptor(io_val.asRaw()));
             const length = integerFromValue(usize, length_val, "expected write length");
             const offset = integerFromValue(usize, offset_val, "expected write offset");
             return self.ioWrite(fd, buffer_val, length, offset) catch
@@ -567,7 +620,7 @@ pub const Selector = struct {
         /// Wait for a child process via pidfd/kqueue. Returns Process::Status.
         pub fn process_wait(self: *Self, fiber_val: Value, pid_val: Value, flags_val: Value) Value {
             self.ensureInitialized();
-            const fiber = fiber_val.toRaw();
+            const fiber = fiber_val.asRaw();
             const pid = integerFromValue(std.posix.pid_t, pid_val, "expected pid");
             const flags = integerFromValue(c_int, flags_val, "expected wait flags");
             return self.processWait(fiber, pid, flags) catch
@@ -661,7 +714,7 @@ pub const Selector = struct {
             const ready = try self.waitForPoll(fiber, fd, .write, timeout);
             if (ready == null) return Value.nil;
             if (!ready.?) return Value.from(false);
-            return Value.from(@as(i64, READABLE | WRITABLE));
+            return support.intValue(READABLE | WRITABLE);
         }
         if ((events & READABLE) != 0) {
             // Skip pollReadableNow: Ruby calls io_wait after EAGAIN, so the fd
@@ -669,13 +722,13 @@ pub const Selector = struct {
             const ready = try self.waitForPoll(fiber, fd, .read, timeout);
             if (ready == null) return Value.nil;
             if (!ready.?) return Value.from(false);
-            return Value.from(@as(i64, READABLE));
+            return support.intValue(READABLE);
         }
         if ((events & WRITABLE) != 0) {
             const ready = try self.waitForPoll(fiber, fd, .write, timeout);
             if (ready == null) return Value.nil;
             if (!ready.?) return Value.from(false);
-            return Value.from(@as(i64, WRITABLE));
+            return support.intValue(WRITABLE);
         }
         return Value.nil;
     }
@@ -709,7 +762,7 @@ pub const Selector = struct {
         if (dir == .read) {
             if (timeout) |seconds| {
                 if (seconds >= 0.0 and std.math.isFinite(seconds)) {
-                    descriptor.read_timeout_token = try self.scheduleTimer(.resume_fiber, fiber, Value.from(false).toRaw(), seconds, descriptor);
+                    descriptor.read_timeout_token = try self.scheduleTimer(.resume_fiber, fiber, Value.from(false).asRaw(), seconds, descriptor);
                 }
             }
         }
@@ -728,7 +781,7 @@ pub const Selector = struct {
         // Poll completion resumes with the event mask (truthy integer).
         // Timeout / external resume (Async timer) transfers nil → not ready.
         // Poll error resumes with false → not ready.
-        const raw = result.toRaw();
+        const raw = result.asRaw();
         return raw != crb.Qfalse and raw != crb.Qnil;
     }
 
@@ -736,11 +789,11 @@ pub const Selector = struct {
         // Extract buffer pointer once: reused by both fast path and uring slow path
         var base: ?*anyopaque = null;
         var size: usize = 0;
-        support.rb_io_buffer_get_bytes_for_writing(buffer.toRaw(), &base, &size);
+        support.rb_io_buffer_get_bytes_for_writing(buffer.asRaw(), &base, &size);
 
-        if (offset > size) return Value.from(@as(i64, -@as(isize, @intFromEnum(std.posix.E.INVAL))));
+        if (offset > size) return support.intValue(-@as(isize, @intFromEnum(std.posix.E.INVAL)));
         const available = size - offset;
-        if (available == 0) return Value.from(@as(i64, 0));
+        if (available == 0) return support.intValue(0);
         const read_len = if (length == 0) available else @min(available, length);
         const ptr: [*]u8 = @ptrCast(base.?);
 
@@ -768,21 +821,21 @@ pub const Selector = struct {
                 // is empty (typical on UDS request/response pairs and small
                 // HTTP responses).
                 if (length == 0) {
-                    return Value.from(@as(i64, @intCast(rc)));
+                    return support.intValue(rc);
                 }
-                return Value.from(@as(i64, @intCast(io.drainRecv(fd, ptr + offset, read_len, @intCast(rc)))));
+                return support.intValue(io.drainRecv(fd, ptr + offset, read_len, @intCast(rc)));
             }
-            if (rc == 0) return Value.from(@as(i64, 0));
+            if (rc == 0) return support.intValue(0);
             if (!io.wouldBlockErrno(-rc)) {
                 // Non-socket fd (pipe, file): try read(2) instead of recv
                 if (io.isEnotsock(-rc)) {
                     const rrc = io.readOnce(fd, (ptr + offset)[0..read_len]);
-                    if (rrc > 0) return Value.from(@as(i64, rrc));
-                    if (rrc == 0) return Value.from(@as(i64, 0));
+                    if (rrc > 0) return support.intValue(rrc);
+                    if (rrc == 0) return support.intValue(0);
                     // EAGAIN on pipe: need to wait, fall back to Ruby
                     return Value.nil;
                 }
-                return Value.from(@as(i64, rc));
+                return support.intValue(rc);
             }
             self.probe_misses[probe_idx] +|= 1;
         }
@@ -791,8 +844,11 @@ pub const Selector = struct {
         const fiber = support.rb_fiber_current();
         if (comptime xev.backend == .io_uring) {
             const uring_result = try self.ioRecvUring(fd, (ptr + offset)[0..read_len], fiber);
-            if (uring_result.toRaw() == crb.Qnil) return uring_result;
-            const n = uring_result.toInt(isize) catch return uring_result;
+            const raw = uring_result.asRaw();
+            if (raw == crb.Qnil or raw == crb.Qfalse) return uring_result;
+            // Payload is always a Fixnum byte-count from ioRecvCallback; skip
+            // the dispatch in Value.to(isize) and decode the tag directly.
+            const n = support.fixnumToIsize(uring_result);
             if (n <= 0) return uring_result;
             // Only reset `probe_misses` if we received a burst—more data may be
             // sitting in the kernel buffer, so the next call's probe is
@@ -811,9 +867,9 @@ pub const Selector = struct {
             // EAGAIN and costs one syscall per read.  For sized reads
             // (length > 0) we still drain to fill the caller's buffer.
             if (length == 0) {
-                return Value.from(@as(i64, @intCast(n)));
+                return support.intValue(n);
             }
-            return Value.from(@as(i64, @intCast(io.drainRecv(fd, ptr + offset, read_len, @intCast(n)))));
+            return support.intValue(io.drainRecv(fd, ptr + offset, read_len, @intCast(n)));
         } else {
             return self.ioReadPoll(fd, ptr + offset, read_len, fiber);
         }
@@ -826,14 +882,14 @@ pub const Selector = struct {
         while (true) {
             const wait_ready = try self.waitForPoll(fiber, fd, .read, null);
             if (wait_ready == null) return Value.nil;
-            if (!wait_ready.?) return Value.from(@as(i64, -@as(isize, @intFromEnum(std.posix.E.AGAIN))));
+            if (!wait_ready.?) return support.intValue(-@as(isize, @intFromEnum(std.posix.E.AGAIN)));
 
             const rc = io.recvOnce(fd, buf[0..read_len]);
-            if (rc > 0) return Value.from(@as(i64, @intCast(io.drainRecv(fd, buf, read_len, @intCast(rc)))));
+            if (rc > 0) return support.intValue(io.drainRecv(fd, buf, read_len, @intCast(rc)));
             if (rc == 0) {
-                return Value.from(@as(i64, 0));
+                return support.intValue(0);
             }
-            if (!io.wouldBlockErrno(-rc)) return Value.from(@as(i64, rc));
+            if (!io.wouldBlockErrno(-rc)) return support.intValue(rc);
         }
     }
 
@@ -873,11 +929,11 @@ pub const Selector = struct {
         // Extract buffer pointer once for send + drain
         var base: ?*const anyopaque = null;
         var size: usize = 0;
-        support.rb_io_buffer_get_bytes_for_reading(buffer.toRaw(), &base, &size);
+        support.rb_io_buffer_get_bytes_for_reading(buffer.asRaw(), &base, &size);
 
-        if (offset > size) return Value.from(@as(i64, -@as(isize, @intFromEnum(std.posix.E.INVAL))));
+        if (offset > size) return support.intValue(-@as(isize, @intFromEnum(std.posix.E.INVAL)));
         const available = size - offset;
-        if (available == 0) return Value.from(@as(i64, 0));
+        if (available == 0) return support.intValue(0);
         const write_len = if (length == 0) available else @min(available, length);
         const ptr: [*]const u8 = @ptrCast(base.?);
         const buf = (ptr + offset)[0..write_len];
@@ -888,19 +944,19 @@ pub const Selector = struct {
         if (rc > 0) {
             total_sent = io.drainSend(fd, buf.ptr, write_len, @intCast(rc));
             if (total_sent >= write_len) {
-                return Value.from(@as(i64, @intCast(total_sent)));
+                return support.intValue(total_sent);
             }
         } else if (rc == 0) {
-            return Value.from(@as(i64, 0));
+            return support.intValue(0);
         } else if (!io.wouldBlockErrno(-rc)) {
             // Non-socket fd (pipe, file): try write(2) instead of send
             if (io.isEnotsock(-rc)) {
                 const wrc = io.writeOnce(fd, buf);
-                if (wrc > 0) return Value.from(@as(i64, wrc));
-                if (wrc == 0) return Value.from(@as(i64, 0));
+                if (wrc > 0) return support.intValue(wrc);
+                if (wrc == 0) return support.intValue(0);
                 return Value.nil;
             }
-            return Value.from(@as(i64, rc));
+            return support.intValue(rc);
         }
 
         // Slow path: wait for writability, then send+drain until complete
@@ -922,11 +978,11 @@ pub const Selector = struct {
         }
 
         if (total_sent > 0) {
-            return Value.from(@as(i64, @intCast(total_sent)));
+            return support.intValue(total_sent);
         }
         // Nothing sent at all—return error from last sendOnce
-        if (rc == 0) return Value.from(@as(i64, 0));
-        return Value.from(@as(i64, rc));
+        if (rc == 0) return support.intValue(0);
+        return support.intValue(rc);
     }
 
     fn processWait(self: *Self, fiber: crb.VALUE, pid: std.posix.pid_t, flags: c_int) !Value {
@@ -996,7 +1052,7 @@ pub const Selector = struct {
         }
     }
 
-    fn enqueue(self: *Self, kind: ReadyKind, fiber: crb.VALUE, payload: crb.VALUE) !void {
+    inline fn enqueue(self: *Self, kind: ReadyKind, fiber: crb.VALUE, payload: crb.VALUE) !void {
         try self.ready_entries.append(self.allocator, .{ .kind = kind, .fiber = fiber, .payload = payload });
     }
 
@@ -1224,14 +1280,10 @@ pub const Selector = struct {
                     // Fast path 2: fiber IS in the map → it re-blocked itself,
                     // so it is guaranteed alive and does NOT need re-enqueuing.
                     // Skips the rb_fiber_alive_p() C call entirely.
-                    if (self.blocked_fibers.count() == 0) {
-                        if (support.fiberAlive(entry.fiber)) {
-                            self.enqueue(.resume_fiber, entry.fiber, crb.Qnil) catch {};
-                        }
-                    } else if (!self.blocked_fibers.contains(entry.fiber)) {
-                        if (support.fiberAlive(entry.fiber)) {
-                            self.enqueue(.resume_fiber, entry.fiber, crb.Qnil) catch {};
-                        }
+                    const not_blocked = self.blocked_fibers.count() == 0 or
+                        !self.blocked_fibers.contains(entry.fiber);
+                    if (not_blocked and support.fiberAlive(entry.fiber)) {
+                        self.enqueue(.resume_fiber, entry.fiber, crb.Qnil) catch {};
                     }
                 },
                 .raise => {
@@ -1405,64 +1457,45 @@ pub const Selector = struct {
 };
 
 
-const GcMode = enum { mark, compact };
+fn selectorMark(data: ?*anyopaque) callconv(.c) void {
+    const self: *Selector = @ptrCast(@alignCast(data.?));
+    support.markValue(self.loop_fiber);
+    support.markValue(self.scheduler_thread);
 
-/// Walk all GC-visible VALUE slots. Mark mode pins values in place;
-/// compact mode updates moved references. Comptime dispatch eliminates
-/// the duplication between selectorMark and selectorCompact.
-fn gcWalkValues(self: *Selector, comptime mode: GcMode) void {
-    const visit = struct {
-        inline fn v(ptr: *crb.VALUE) void {
-            if (mode == .compact) {
-                ptr.* = support.compactValue(ptr.*);
-            } else {
-                support.markValue(ptr.*);
-            }
-        }
-    }.v;
-
-    visit(&self.loop_fiber);
-    visit(&self.scheduler_thread);
-
-    for (self.ready_entries.items) |*entry| {
-        visit(&entry.fiber);
-        visit(&entry.payload);
+    for (self.ready_entries.items) |entry| {
+        support.markValue(entry.fiber);
+        support.markValue(entry.payload);
     }
 
-    {
+    // Mirror drainCrossThread's fast path: the pending flag is set with
+    // release ordering after every cross-thread append, so an acquire load
+    // observing `false` here means no other thread has anything to mark.
+    // Skipping the mutex avoids the lock+unlock per GC cycle for the common
+    // single-threaded scheduler case.
+    if (self.cross_thread_pending.load(.acquire)) {
         self.cross_thread_mutex.lock();
         defer self.cross_thread_mutex.unlock();
-        for (self.cross_thread_entries.items) |*entry| {
-            visit(&entry.fiber);
-            visit(&entry.payload);
+        for (self.cross_thread_entries.items) |entry| {
+            support.markValue(entry.fiber);
+            support.markValue(entry.payload);
         }
     }
 
-    if (mode == .compact) self.timers.compact() else self.timers.mark();
+    self.timers.mark();
 
     var it = self.descriptors.iterator();
     while (it.next()) |entry| {
         const descriptor = entry.value_ptr.*;
-        for (&descriptor.poll) |*state| visit(&state.waiter);
+        for (descriptor.poll) |state| support.markValue(state.waiter);
     }
 
-    for (self.process_waits.items) |wait| visit(&wait.fiber);
+    for (self.process_waits.items) |wait| support.markValue(wait.fiber);
 
     for (self.retired_descriptors.items) |descriptor| {
-        for (&descriptor.poll) |*state| visit(&state.waiter);
+        for (descriptor.poll) |state| support.markValue(state.waiter);
     }
 
-    for (self.retired_process_waits.items) |wait| visit(&wait.fiber);
-}
-
-fn selectorMark(data: ?*anyopaque) callconv(.c) void {
-    const self: *Selector = @ptrCast(@alignCast(data.?));
-    gcWalkValues(self, .mark);
-}
-
-fn selectorCompact(data: ?*anyopaque) callconv(.c) void {
-    const self: *Selector = @ptrCast(@alignCast(data.?));
-    gcWalkValues(self, .compact);
+    for (self.retired_process_waits.items) |wait| support.markValue(wait.fiber);
 }
 
 fn selectorFree(data: ?*anyopaque) callconv(.c) void {
@@ -1509,7 +1542,7 @@ fn completePoll(descriptor: ?*Descriptor, completion: *xev.Completion, ok: bool)
         state.waiter = crb.Qnil;
         if (self.active_waiters > 0) self.active_waiters -= 1;
         const event: i16 = if (dir == .read) READABLE else WRITABLE;
-        const payload = if (ok) Value.from(@as(i64, event)).toRaw() else Value.from(false).toRaw();
+        const payload = if (ok) support.intValue(event).asRaw() else Value.from(false).asRaw();
         self.enqueue(.resume_fiber, fiber, payload) catch {};
     }
 
@@ -1524,7 +1557,7 @@ fn completePoll(descriptor: ?*Descriptor, completion: *xev.Completion, ok: bool)
             .udata = 0,
             .ext = .{ 0, 0 },
         }};
-        _ = std.c.kevent64(self.loop.kqueue_fd, &kev, 1, &kev, 0, 0, null);
+        _ = std.c.kevent64(self.loop.kqueue_fd, &kev, 1, &kev, 0, .NONE, null);
     }
 
     return .disarm;
@@ -1579,7 +1612,7 @@ fn ioRecvCallback(
         state.waiter = crb.Qnil;
         if (self.active_waiters > 0) self.active_waiters -= 1;
         // Pass io_result as a Ruby Fixnum through the fiber transfer payload
-        self.enqueue(.resume_fiber, fiber, Value.from(@as(i64, io_result)).toRaw()) catch {};
+        self.enqueue(.resume_fiber, fiber, support.intValue(io_result).asRaw()) catch {};
     }
 
     return .disarm;
@@ -1598,7 +1631,7 @@ fn processWaitCallback(
         const fiber = process_wait.fiber;
         process_wait.fiber = crb.Qnil;
         if (process_wait.selector.active_waiters > 0) process_wait.selector.active_waiters -= 1;
-        process_wait.selector.enqueue(.resume_fiber, fiber, Value.from(true).toRaw()) catch {};
+        process_wait.selector.enqueue(.resume_fiber, fiber, Value.from(true).asRaw()) catch {};
     }
 
     return .disarm;
@@ -1639,11 +1672,20 @@ fn waitUnblock(data: ?*anyopaque) callconv(.c) void {
 }
 
 fn floatFromValue(value: Value, fallback: ?f64) f64 {
-    return value.toFloat(f64) catch fallback orelse Error.raiseArgumentError("expected numeric timeout");
+    return value.to(f64) catch fallback orelse Error.raiseArgumentError("expected numeric timeout");
 }
 
-fn integerFromValue(comptime T: type, value: Value, message: [:0]const u8) T {
-    return value.toInt(T) catch Error.raiseArgumentError(message);
+inline fn integerFromValue(comptime T: type, value: Value, message: [:0]const u8) T {
+    // Fixnum fast path: virtually every fd / events / length / offset that
+    // Ruby passes us is already a Fixnum (small integer). Skip zig.rb's
+    // Value.to(T), which goes through rb_type dispatch, and decode the
+    // (n << 1) | 1 tag directly. Bignums and non-numerics fall through to
+    // the slow path that does the proper dispatch + raises ArgumentError.
+    const raw = value.asRaw();
+    if ((raw & 1) == 1) {
+        return @intCast(@as(isize, @bitCast(raw)) >> 1);
+    }
+    return value.to(T) catch Error.raiseArgumentError(message);
 }
 
 fn ptrToValue(ptr: anytype) crb.VALUE {

@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-# Producer/consumer signaling via Async::Condition.
-# Multiple producers signal conditions that multiple consumers wait on.
-# Exercises the selector's fiber wakeup and transfer paths.
+# Producer/consumer signaling via Async::Queue.
+# Multiple producers push to a shared queue that multiple consumers pop.
+# Exercises the selector's fiber wakeup and transfer paths under contention.
 
 module AsyncBench
   module Workloads
@@ -15,41 +15,39 @@ module AsyncBench
         started_at = AsyncBench.monotonic_time
 
         Async do
-          barrier = Async::Barrier.new
-          # Shared condition + counter for flow control
-          condition = Async::Condition.new
-          produced = 0
-          consumed = 0
+          consumer_barrier = Async::Barrier.new
+          producer_barrier = Async::Barrier.new
+          queue = Async::Queue.new
           total = producers * messages
 
-          # Consumers: wait for signals, count receipts
           consumers.times do
-            barrier.async do
+            consumer_barrier.async do
               loop do
-                condition.wait
-                consumed += 1
-                break if consumed >= total
+                item = queue.dequeue
+                break if item == :drain
               end
             end
           end
 
-          # Producers: signal the condition, small sleep between bursts
           producers.times do
-            barrier.async do
+            producer_barrier.async do
               messages.times do |i|
-                produced += 1
-                condition.signal(produced)
-                # Yield periodically to let consumers run
+                queue.enqueue(i)
+                # Yield periodically to let consumers run.
                 sleep(0.0001) if (i % 10).zero?
               end
             end
           end
 
-          # Wait for all producers to finish
-          # Then signal remaining consumers to unblock
-          barrier.wait
+          producer_barrier.wait
+          # Send one drain marker per consumer so every consumer's pop()
+          # observes a sentinel and exits its loop. Buffered queue, so
+          # markers never get lost even if a consumer is mid-yield.
+          consumers.times { queue.enqueue(:drain) }
+          consumer_barrier.wait
+          total
         rescue
-          # Barrier.wait may raise if consumer tasks error on shutdown
+          # Barrier.wait may raise if consumer tasks error on shutdown.
           nil
         end
 

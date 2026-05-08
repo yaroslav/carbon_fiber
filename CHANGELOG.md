@@ -1,3 +1,9 @@
+## [Unreleased]
+
+- Update to Zig 0.16.0; update libxev and zig.rb to the latest versions.
+- Performance improvements. README updated with latest numbers.
+- Improve benchmarking: default to 3 measured runs plus 1 warmup run. Now reporting `±CV%` and the delta column tags rows `(noisy)` when the change is within jitter. Add the ability to benchmark released vs. unreleased carbon_fiber.
+
 ## [0.1.2] - 2026-04-29
 
 - Fix the `x86_64-linux` precompiled gem (erroneously shipped an aarch64 

@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "benchmark"
-
 module AsyncBench
   TARGETS = {
     "stock" => {
@@ -12,6 +10,18 @@ module AsyncBench
         require_relative "../../lib/carbon_fiber"
         require "async"
         require_relative "../../lib/carbon_fiber/async"
+        CarbonFiber::Async.default!
+      }
+    },
+    # Latest carbon_fiber from RubyGems, paired with Async, for A/B
+    # against the local source. async_bench_one scopes GEM_HOME per-target,
+    # so `require "carbon_fiber"` resolves from the installed gem.
+    "carbon_published" => {
+      gems: [["carbon_fiber", "0.1.2"]],
+      setup: -> {
+        require "carbon_fiber"
+        require "async"
+        require "carbon_fiber/async"
         CarbonFiber::Async.default!
       }
     }

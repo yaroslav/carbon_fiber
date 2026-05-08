@@ -6,16 +6,25 @@ const Value = rb.Value;
 const crb = rb.crb;
 const bindings = @import("bindings.zig");
 
+// See bindings.zig for the rationale on re-declaring this with an
+// `*const anyopaque` slot.
+extern fn rb_define_module_function(
+    module: crb.VALUE,
+    name: [*c]const u8,
+    func: *const anyopaque,
+    arity: c_int,
+) void;
+
 fn defineModuleFunction(module_value: crb.VALUE, name: [*:0]const u8, comptime func: anytype, argc: c_int) void {
-    crb.rb_define_module_function(module_value, name, @as(?*const fn (...) callconv(.c) crb.VALUE, @ptrCast(&func)), argc);
+    rb_define_module_function(module_value, name, &func, argc);
 }
 
 fn availableWrapper(_: crb.VALUE) callconv(.c) crb.VALUE {
-    return Value.from(true).toRaw();
+    return Value.from(true).asRaw();
 }
 
 fn backendWrapper(_: crb.VALUE) callconv(.c) crb.VALUE {
-    return Value.from("libxev").toRaw();
+    return Value.from("libxev").asRaw();
 }
 
 export fn Init_carbon_fiber_native() void {

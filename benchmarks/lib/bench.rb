@@ -6,6 +6,15 @@ module Bench
       require_proc: -> { require_relative "../../lib/carbon_fiber" },
       constant: "CarbonFiber::Scheduler"
     },
+    # Latest carbon_fiber from RubyGems, for A/B against the local source.
+    # GEM_HOME is scoped per-target by bench_one, and the require_proc is
+    # `require "carbon_fiber"` (not require_relative), so resolution comes
+    # from the gem dir rather than the in-tree lib/.
+    "carbon_published" => {
+      gems: [["carbon_fiber", "0.1.2"]],
+      require_proc: -> { require "carbon_fiber" },
+      constant: "CarbonFiber::Scheduler"
+    },
     "async" => {
       gems: [["async", "2.38.1"]],
       require_proc: -> { require "async" },

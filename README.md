@@ -50,18 +50,18 @@ end
 
 ## Performance
 
-AWS EC2 c7a.2xlarge, 8 dedicated vCPUs, Ubuntu 24.04 LTS, kernel 6.17, Ruby 4.0.2 + YJIT, io_uring. 5-run median.
+AWS EC2 c7a.2xlarge, 8 dedicated vCPUs, Amazon Linux 2023, kernel 6.18.20, Ruby 4.0.2 + YJIT, io_uring. 5-run median.
 
 Some benchmarks:
 
 | Workload | Carbon Fiber | Async | Itsi | Carbon Fiber vs. Async |
 |---|---|---|---|---|
-| `http_server` | **48.175k req/s** | 37.409k req/s | 29.708k req/s | +29% |
-| `http_client_api` | **15.528k req/s** | 13.373k req/s | timeout | +16% |
-| `http_client_download` | **6.747k dl/s** | 5.920k dl/s | timeout | +14% |
-| `tcp_echo` | **50.392k ops/s** | 38.907k ops/s | 30.660k ops/s | +29% |
-| `cascading_timeout` | **4.659k ops/s** | 4.488k ops/s | error | +4% |
-| `connection_pool` | **4.989k co/s** | 4.912k co/s | 4.968k co/s | +2% |
+| `http_server` | **49.380k req/s** | 30.823k req/s | 30.864k req/s | +60% |
+| `http_client_api` | **19.500k req/s** | 16.721k req/s | timeout | +17% |
+| `http_client_download` | **8.426k dl/s** | 7.062k dl/s | timeout | +19% |
+| `tcp_echo` | **52.973k ops/s** | 32.330k ops/s | 32.046k ops/s | +64% |
+| `cascading_timeout` | **4.668k ops/s** | 4.414k ops/s | error | +6% |
+| `connection_pool` | **4.967k co/s** | 4.612k co/s | 4.954k co/s | +8% |
 
 Wins on most workloads against Async, Itsi, fiber_scheduler, io-event, and libev. [See detailed benchmarks →](#benchmarks)
 
@@ -256,7 +256,7 @@ If the native extension can't be loaded (on Windows, for example), a pure-Ruby f
 
 ## Benchmarks
 
-AWS EC2 c7a.2xlarge, 8 dedicated vCPUs, Ubuntu 24.04 LTS, kernel 6.17, Ruby 4.0.2 + YJIT, io_uring. 5-run median.
+AWS EC2 c7a.2xlarge, 8 dedicated vCPUs, Amazon Linux 2023, kernel 6.18.20, Ruby 4.0.2 + YJIT, io_uring. 5-run median.
 
 ### Ruby Fiber Schedulers (leading ones): Carbon Fiber vs. Async vs. Itsi
 
@@ -264,14 +264,14 @@ Measuring pure Ruby Fiber Scheduler performance (`Fiber.set_scheduler`).
 
 | Workload | Unit | Carbon Fiber | Async | Itsi | Carbon Fiber vs. Async |
 |---|---|---|---|---|---|
-| `http_client_api` | req/s | **15,528** | 13,373 | timeout | +16% |
-| `http_client_download` | dl/s | **6,747** | 5,920 | timeout | +14% |
-| `http_server` | req/s | **48,175** | 37,409 | 29,708 | +29% |
-| `tcp_echo` | ops/s | **50,392** | 38,907 | 30,660 | +29% |
-| `connection_pool` | co/s | **4,989** | 4,912 | 4,968 | +2% |
-| `fan_out_gather` | cyc/s | 2,024 | 2,046 | **2,104** | −1% |
-| `db_query_mix` | qry/s | 1,660 | 1,652 | **1,662** | +0.5% |
-| `cascading_timeout` | ops/s | **4,659** | 4,488 | error | +4% |
+| `http_client_api` | req/s | **19,500** | 16,721 | timeout | +17% |
+| `http_client_download` | dl/s | **8,426** | 7,062 | timeout | +19% |
+| `http_server` | req/s | **49,380** | 30,823 | 30,864 | +60% |
+| `tcp_echo` | ops/s | **52,973** | 32,330 | 32,046 | +64% |
+| `connection_pool` | co/s | **4,967** | 4,612 | 4,954 | +8% |
+| `fan_out_gather` | cyc/s | 2,022 | 1,923 | **2,094** | +5% |
+| `db_query_mix` | qry/s | 1,660 | 1,623 | **1,662** | +2% |
+| `cascading_timeout` | ops/s | **4,668** | 4,414 | error | +6% |
 
 Enabling YJIT turned out to be very beneficial for Async as well—numbers here are with `--yjit` on both sides.
 
@@ -281,12 +281,12 @@ Swapped the io-event selector for Carbon Fiber's native backend. Same Async code
 
 | Workload | Unit | Stock Async | Carbon Fiber | Delta |
 |---|---|---|---|---|
-| `http_client_api` | req/s | 13,375 | **14,331** | +7.1% |
-| `http_client_download` | dl/s | 3,893 | **3,956** | +1.6% |
-| `task_churn` | task/s | **87,883** | 85,027 | −3.3% |
-| `condition_signal` | sig/s | 337,282 | **361,089** | +7.1% |
-| `cascading_timeout` | ops/s | 4,497 | **4,511** | +0.3% |
-| `tcp_throughput` | ops/s | 42,292 | **51,930** | +22.8% |
+| `http_client_api` | req/s | 17,119 | **17,323** | +1.2% |
+| `http_client_download` | dl/s | 2,263 | **2,474** | +9.3% |
+| `task_churn` | task/s | 119,477 | **120,985** | +1.3% |
+| `condition_signal` | sig/s | 44,887 | **46,921** | +4.5% |
+| `cascading_timeout` | ops/s | 4,414 | **4,472** | +1.3% |
+| `tcp_throughput` | ops/s | 32,606 | **48,214** | +47.9% |
 
 ### Examples of how to run benchmarks
 

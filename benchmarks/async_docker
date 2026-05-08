@@ -22,11 +22,13 @@ docker run --rm \
   -v "${ROOT}:/workspace" \
   -w /workspace \
   -e BENCH_GEM_HOME=/workspace/tmp/linux_gems \
-  -e RUBYOPT=--yjit \
+  -e RUBYOPT="${BENCH_RUBYOPT:---yjit}" \
+  -e BENCH_TIMEOUT \
   carbon-fiber-bench \
   bash -c '
     bundle install --quiet &&
     zig build -Doptimize=ReleaseFast &&
     gem install async --install-dir /workspace/tmp/linux_gems/async --no-document &&
+    gem install carbon_fiber -v 0.1.2 --install-dir /workspace/tmp/linux_gems/carbon_published --no-document &&
     ruby ./benchmarks/async_bench "$@"
   ' -- "$@"
