@@ -238,15 +238,14 @@ module CarbonFiber
       end
     end
 
-    # Cancel pending waiters on an IO and close the descriptor.
-    # @param io [IO]
-    def io_close(io)
-      descriptor = io.respond_to?(:to_i) ? io.to_i : io
+    # Cancel pending waiters on a descriptor and close it.
+    # @param descriptor [Integer]
+    def io_close(descriptor)
       @selector.io_close(descriptor, IOError.new("stream closed while waiting"))
 
       Fiber.blocking do
-        target = io.is_a?(IO) ? io : IO.for_fd(descriptor.to_i)
-        target.close unless target.closed?
+        io = IO.for_fd(descriptor)
+        io.close unless io.closed?
       end
 
       true

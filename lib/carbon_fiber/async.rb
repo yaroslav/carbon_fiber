@@ -143,11 +143,10 @@ module CarbonFiber
         ruby_io_write(fiber, io, buffer, length, offset)
       end
 
-      # Cancel pending waiters and close the descriptor.
-      # @param io [IO]
-      def io_close(io)
-        fd = io.respond_to?(:fileno) ? io.fileno : io.to_i
-        super(fd, IOError.new("stream closed while waiting"))
+      # Cancel pending waiters on the descriptor.
+      # @param descriptor [Integer]
+      def io_close(descriptor)
+        super(descriptor, IOError.new("stream closed while waiting"))
       end
 
       # Wait for a child process on a background thread.

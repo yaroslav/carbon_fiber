@@ -1,3 +1,7 @@
+## [Unreleased]
+
+- `Scheduler#io_close` and `Async::Selector#io_close` now take a file descriptor (Integer), matching Ruby's Fiber::Scheduler protocol. (Thanks to [Samuel Williams](https://github.com/samuel-williams-shopify)).
+
 ## [0.1.3] - 2026-05-08
 
 - Update to Zig 0.16.0; update libxev and zig.rb to the latest versions.
