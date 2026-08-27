@@ -22,6 +22,7 @@
 const std = @import("std");
 const xev = @import("xev");
 const rb = @import("rb");
+const build_options = @import("build_options");
 const Error = rb.Error;
 const Value = rb.Value;
 const crb = rb.crb;
@@ -228,7 +229,27 @@ pub const Selector = struct {
     descriptor_cache: [DESCRIPTOR_CACHE_SIZE]?*Descriptor = [_]?*Descriptor{null} ** DESCRIPTOR_CACHE_SIZE,
 
     pub const RubyType = struct {
-        pub const rb_data_type: crb.rb_data_type_t = .{
+        // Ruby 4.1's rb_data_type_t.function gained handle_weak_references
+        // and a larger reserved array, shifting parent/data/flags. Passing
+        // the older crb layout makes 4.1 read garbage flags (and reject the
+        // wrap as "embeddable"), so the matching layout is selected at
+        // build time via build_options.ruby_4_1_typed_data.
+        const DataTypeV41 = extern struct {
+            wrap_struct_name: [*c]const u8,
+            function: extern struct {
+                dmark: crb.RUBY_DATA_FUNC,
+                dfree: crb.RUBY_DATA_FUNC,
+                dsize: ?*const fn (?*const anyopaque) callconv(.c) usize,
+                dcompact: crb.RUBY_DATA_FUNC,
+                handle_weak_references: crb.RUBY_DATA_FUNC,
+                reserved: [7]?*anyopaque,
+            },
+            parent: ?*const anyopaque,
+            data: ?*anyopaque,
+            flags: crb.VALUE,
+        };
+
+        pub const rb_data_type = if (build_options.ruby_4_1_typed_data) DataTypeV41{
             .wrap_struct_name = "CarbonFiber::Native::Selector",
             .function = .{
                 .dmark = &selectorMark,
@@ -237,6 +258,20 @@ pub const Selector = struct {
                 // No dcompact: markValue uses rb_gc_mark_maybe which pins
                 // the marked VALUEs in place, so compaction never moves
                 // anything we hold and we don't need a relocation pass.
+                .dcompact = null,
+                .handle_weak_references = null,
+                .reserved = .{null} ** 7,
+            },
+            .parent = null,
+            .data = null,
+            .flags = crb.RUBY_TYPED_FREE_IMMEDIATELY,
+        } else crb.rb_data_type_t{
+            .wrap_struct_name = "CarbonFiber::Native::Selector",
+            .function = .{
+                .dmark = &selectorMark,
+                .dfree = &selectorFree,
+                .dsize = null,
+                // No dcompact: see above.
                 .dcompact = null,
                 .reserved = .{null},
             },
@@ -248,11 +283,11 @@ pub const Selector = struct {
         pub fn alloc_func(rb_class: crb.VALUE) callconv(.c) crb.VALUE {
             const selector = std.heap.c_allocator.create(Self) catch @panic("failed to allocate selector");
             selector.* = .{};
-            return crb.rb_data_typed_object_wrap(rb_class, selector, &rb_data_type);
+            return crb.rb_data_typed_object_wrap(rb_class, selector, @ptrCast(&rb_data_type));
         }
 
         pub inline fn unwrap(rb_value: crb.VALUE) *Self {
-            return @ptrCast(@alignCast(crb.rb_check_typeddata(rb_value, &rb_data_type)));
+            return @ptrCast(@alignCast(crb.rb_check_typeddata(rb_value, @ptrCast(&rb_data_type))));
         }
     };
 
