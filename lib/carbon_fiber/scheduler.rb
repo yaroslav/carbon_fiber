@@ -5,6 +5,7 @@
 require "resolv"
 require "socket"
 require "timeout"
+require_relative "io_contract"
 require_relative "native"
 
 # High-performance Ruby Fiber Scheduler backed by Zig and libxev.
@@ -43,10 +44,15 @@ module CarbonFiber
   class Scheduler
     # @param root_fiber [Fiber] the event loop fiber (defaults to current)
     # @param selector [Class] native selector class to instantiate
-    def initialize(root_fiber = Fiber.current, selector: CarbonFiber::Native::Selector)
+    # @param io_contract_v4 [Boolean] use the Ruby 4.1+ single-transfer
+    #   contract in the native I/O paths (defaults to what the running
+    #   Ruby speaks; override only for testing)
+    def initialize(root_fiber = Fiber.current, selector: CarbonFiber::Native::Selector,
+      io_contract_v4: CarbonFiber.io_contract_v4?)
       @root_fiber = root_fiber
       @scheduler_thread = Thread.current
       @selector = selector.new(root_fiber)
+      @selector.io_contract_v4 = io_contract_v4
       @active_fibers = 0
       @background_count = 0
       @closed = false
@@ -189,14 +195,15 @@ module CarbonFiber
       await_background_operation { io_select_readiness(io, events, timeout) }
     end
 
-    # Read from an IO into a buffer via the native selector.
+    # Read from an IO into a buffer via the native selector (legacy contract,
+    # Ruby 3.4 through 4.0: length before offset, minimum-progress semantics).
     # Falls back to a background thread for non-socket descriptors.
     # @param io [IO]
     # @param buffer [IO::Buffer]
     # @param length [Integer]
     # @param offset [Integer]
     # @return [Integer] bytes read, or negative errno
-    def io_read(io, buffer, length, offset = 0)
+    def io_read_v3(io, buffer, length, offset = 0)
       # Native io_read_object extracts the descriptor in Zig, skipping a
       # `respond_to?(:fileno)` + `io.fileno` method-send pair per call.
       native_result = @selector.io_read_object(io, buffer, length, offset)
@@ -211,14 +218,39 @@ module CarbonFiber
       end
     end
 
-    # Write from a buffer to an IO via the native selector.
+    # Read from an IO into a buffer via the native selector (Ruby 4.1+
+    # contract: offset before length, single transfer). One nonblocking
+    # attempt; short results and -EAGAIN are returned directly, and Ruby's
+    # own read loop composes retries via io_wait.
+    # @param io [IO]
+    # @param buffer [IO::Buffer]
+    # @param offset [Integer]
+    # @param length [Integer] maximum bytes for this transfer
+    # @return [Integer] bytes read, or negative errno
+    def io_read_v4(io, buffer, offset, length)
+      return 0 if length.zero?
+
+      native_result = @selector.io_read_object(io, buffer, length, offset)
+      return native_result unless native_result.nil?
+
+      await_background_operation do
+        Fiber.blocking { buffer.read(io, offset, length) }
+      end
+    rescue NoMethodError, TypeError
+      await_background_operation do
+        Fiber.blocking { buffer.read(io, offset, length) }
+      end
+    end
+
+    # Write from a buffer to an IO via the native selector (legacy contract,
+    # Ruby 3.4 through 4.0: length before offset, minimum-progress semantics).
     # Falls back to a background thread for non-socket descriptors.
     # @param io [IO]
     # @param buffer [IO::Buffer]
     # @param length [Integer]
     # @param offset [Integer]
     # @return [Integer] bytes written, or negative errno
-    def io_write(io, buffer, length, offset = 0)
+    def io_write_v3(io, buffer, length, offset = 0)
       native_result = @selector.io_write_object(io, buffer, length, offset)
       return native_result unless native_result.nil?
 
@@ -229,6 +261,38 @@ module CarbonFiber
       await_background_operation do
         Fiber.blocking { buffer.write(io, length, offset) }
       end
+    end
+
+    # Write from a buffer to an IO via the native selector (Ruby 4.1+
+    # contract: offset before length, single transfer).
+    # @param io [IO]
+    # @param buffer [IO::Buffer]
+    # @param offset [Integer]
+    # @param length [Integer] maximum bytes for this transfer
+    # @return [Integer] bytes written, or negative errno
+    def io_write_v4(io, buffer, offset, length)
+      return 0 if length.zero?
+
+      native_result = @selector.io_write_object(io, buffer, length, offset)
+      return native_result unless native_result.nil?
+
+      await_background_operation do
+        Fiber.blocking { buffer.write(io, offset, length) }
+      end
+    rescue NoMethodError, TypeError
+      await_background_operation do
+        Fiber.blocking { buffer.write(io, offset, length) }
+      end
+    end
+
+    # The public hook names follow the contract of the running Ruby;
+    # both generations stay defined for direct testing.
+    if CarbonFiber.io_contract_v4?
+      alias_method :io_read, :io_read_v4
+      alias_method :io_write, :io_write_v4
+    else
+      alias_method :io_read, :io_read_v3
+      alias_method :io_write, :io_write_v3
     end
 
     # Blocking IO.select on a background thread.

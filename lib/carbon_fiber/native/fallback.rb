@@ -33,6 +33,10 @@ module CarbonFiber
         true
       end
 
+      # Accepted for interface parity with the native selector; the fallback
+      # has no native I/O paths, so the contract generation changes nothing.
+      attr_writer :io_contract_v4
+
       # @return [Boolean] whether there is pending work
       def pending?
         @mutex.synchronize { @ready.any? || @timers.any? || @read_waits.any? }

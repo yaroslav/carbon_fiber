@@ -45,6 +45,7 @@ pub fn register(native_raw: crb.VALUE) void {
     define(selector_class, "io_wait_with_timeout", selectorIoWaitWithTimeoutWrapper, 4);
     define(selector_class, "io_wait_object", selectorIoWaitObjectWrapper, 3);
     define(selector_class, "io_close", selectorIoCloseWrapper, 2);
+    define(selector_class, "io_contract_v4=", selectorSetIoContractV4Wrapper, 1);
     define(selector_class, "io_read", selectorIoReadWrapper, 4);
     define(selector_class, "io_read_object", selectorIoReadObjectWrapper, 4);
     define(selector_class, "io_write", selectorIoWriteWrapper, 4);
@@ -147,6 +148,10 @@ fn selectorIoWaitObjectWrapper(rb_self: crb.VALUE, io_raw: crb.VALUE, events_raw
 
 fn selectorIoCloseWrapper(rb_self: crb.VALUE, fd_raw: crb.VALUE, exception_raw: crb.VALUE) callconv(.c) crb.VALUE {
     return Selector.InstanceMethods.io_close(unwrap(rb_self), Value.fromRaw(fd_raw), Value.fromRaw(exception_raw)).asRaw();
+}
+
+fn selectorSetIoContractV4Wrapper(rb_self: crb.VALUE, enabled_raw: crb.VALUE) callconv(.c) crb.VALUE {
+    return Selector.InstanceMethods.set_io_contract_v4(unwrap(rb_self), Value.fromRaw(enabled_raw)).asRaw();
 }
 
 fn selectorIoReadWrapper(rb_self: crb.VALUE, fd_raw: crb.VALUE, buffer_raw: crb.VALUE, length_raw: crb.VALUE, offset_raw: crb.VALUE) callconv(.c) crb.VALUE {

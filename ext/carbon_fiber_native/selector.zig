@@ -201,6 +201,12 @@ pub const Selector = struct {
     probe_misses: [256]u8 = std.mem.zeroes([256]u8),
 
     initialized: bool = false,
+    // Ruby 4.1+ (RUBY_IO_BUFFER_VERSION >= 3) single-transfer contract for
+    // ioRead/ioWrite: one nonblocking attempt, short results and -EAGAIN
+    // returned directly, zero length transfers nothing. Set from Ruby via
+    // `io_contract_v4=` because the generated bindings expose no scheduler
+    // version macro. Defaults to the legacy minimum-progress contract.
+    io_contract_v4: bool = false,
     // Set by deadlineTimerCallback so waitWithoutGVL can distinguish a genuine
     // deadline wakeup from a spurious GC-preemption notify.
     deadline_fired: bool = false,
@@ -570,6 +576,14 @@ pub const Selector = struct {
             return Value.from(true);
         }
 
+        /// Select the Ruby 4.1+ single-transfer contract for io_read/io_write.
+        /// Exposed to Ruby as `io_contract_v4=`; the Ruby wrapper decides from
+        /// `IO::Buffer::VERSION` at load time.
+        pub fn set_io_contract_v4(self: *Self, enabled_val: Value) Value {
+            self.io_contract_v4 = enabled_val.isTruthy();
+            return enabled_val;
+        }
+
         /// Read from a socket fd into an IO::Buffer.
         /// Returns bytes read or nil for non-sockets.
         pub fn io_read(self: *Self, fd_val: Value, buffer_val: Value, length_val: Value, offset_val: Value) Value {
@@ -785,7 +799,39 @@ pub const Selector = struct {
         return raw != crb.Qfalse and raw != crb.Qnil;
     }
 
+    // Ruby 4.1+ single-transfer read: one nonblocking attempt, short results
+    // and -EAGAIN returned directly. Ruby's own read loop composes retries
+    // via io_wait, so this never suspends and never returns nil. The probe
+    // skip and drainRecv machinery stay out: skipping would return -EAGAIN
+    // without the attempt the contract requires, and draining is extra
+    // speculative syscalls the caller no longer expects.
+    fn ioReadV4(self: *Self, fd: std.posix.fd_t, buffer: Value, length: usize, offset: usize) Value {
+        _ = self;
+        if (length == 0) return support.intValue(0);
+
+        var base: ?*anyopaque = null;
+        var size: usize = 0;
+        support.rb_io_buffer_get_bytes_for_writing(buffer.asRaw(), &base, &size);
+
+        if (offset > size) return support.intValue(-@as(isize, @intFromEnum(std.posix.E.INVAL)));
+        const available = size - offset;
+        if (available == 0) return support.intValue(0);
+        const read_len = @min(available, length);
+        const ptr: [*]u8 = @ptrCast(base.?);
+
+        const rc = io.recvOnce(fd, (ptr + offset)[0..read_len]);
+        if (rc >= 0) return support.intValue(rc);
+        if (io.isEnotsock(-rc)) {
+            // Non-socket fd (pipe, file): read(2) once. -EAGAIN goes back to
+            // Ruby directly; pipes are pollable, so io_wait handles the rest.
+            return support.intValue(io.readOnce(fd, (ptr + offset)[0..read_len]));
+        }
+        return support.intValue(rc);
+    }
+
     fn ioRead(self: *Self, fd: std.posix.fd_t, buffer: Value, length: usize, offset: usize) !Value {
+        if (self.io_contract_v4) return self.ioReadV4(fd, buffer, length, offset);
+
         // Extract buffer pointer once: reused by both fast path and uring slow path
         var base: ?*anyopaque = null;
         var size: usize = 0;
@@ -925,7 +971,32 @@ pub const Selector = struct {
         return transfer_result;
     }
 
+    // Ruby 4.1+ single-transfer write: mirror of ioReadV4.
+    fn ioWriteV4(self: *Self, fd: std.posix.fd_t, buffer: Value, length: usize, offset: usize) Value {
+        _ = self;
+        if (length == 0) return support.intValue(0);
+
+        var base: ?*const anyopaque = null;
+        var size: usize = 0;
+        support.rb_io_buffer_get_bytes_for_reading(buffer.asRaw(), &base, &size);
+
+        if (offset > size) return support.intValue(-@as(isize, @intFromEnum(std.posix.E.INVAL)));
+        const available = size - offset;
+        if (available == 0) return support.intValue(0);
+        const write_len = @min(available, length);
+        const ptr: [*]const u8 = @ptrCast(base.?);
+
+        const rc = io.sendOnce(fd, (ptr + offset)[0..write_len]);
+        if (rc >= 0) return support.intValue(rc);
+        if (io.isEnotsock(-rc)) {
+            return support.intValue(io.writeOnce(fd, (ptr + offset)[0..write_len]));
+        }
+        return support.intValue(rc);
+    }
+
     fn ioWrite(self: *Self, fd: std.posix.fd_t, buffer: Value, length: usize, offset: usize) !Value {
+        if (self.io_contract_v4) return self.ioWriteV4(fd, buffer, length, offset);
+
         // Extract buffer pointer once for send + drain
         var base: ?*const anyopaque = null;
         var size: usize = 0;
