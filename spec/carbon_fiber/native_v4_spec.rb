@@ -3,6 +3,7 @@
 require "spec_helper"
 require "socket"
 require "io/nonblock"
+require "tempfile"
 
 # Native selector semantics under the Ruby 4.1+ single-transfer contract
 # (selector.io_contract_v4 = true). The native ABI keeps its
@@ -110,6 +111,38 @@ RSpec.describe "native selector v4 contract", :native_only do
       expect(v4_selector.io_read(local.fileno, buffer, 4, 32)).to eq(einval)
     end
 
+    it "returns 0 when offset equals the buffer capacity, without consuming" do
+      local, peer = stream_pair
+      peer.write("hi")
+      buffer = IO::Buffer.new(16)
+
+      expect(v4_selector.io_read(local.fileno, buffer, 4, 16)).to eq(0)
+      expect(v4_selector.io_read(local.fileno, buffer, 16, 0)).to eq(2)
+      expect(buffer.get_string(0, 2)).to eq("hi")
+    end
+
+    it "reads from a regular file" do
+      file = Tempfile.new("carbon_v4")
+      file.write("file contents")
+      file.flush
+      file.rewind
+      buffer = IO::Buffer.new(16)
+
+      expect(v4_selector.io_read(file.fileno, buffer, 13, 0)).to eq(13)
+      expect(buffer.get_string(0, 13)).to eq("file contents")
+    ensure
+      file.close!
+    end
+
+    it "returns 0 at end of a regular file" do
+      file = Tempfile.new("carbon_v4")
+      buffer = IO::Buffer.new(16)
+
+      expect(v4_selector.io_read(file.fileno, buffer, 16, 0)).to eq(0)
+    ensure
+      file.close!
+    end
+
     it "clamps length to the buffer capacity after offset" do
       local, peer = stream_pair
       peer.write("abcdefghij")
@@ -192,6 +225,28 @@ RSpec.describe "native selector v4 contract", :native_only do
       buffer = IO::Buffer.new(16)
 
       expect(v4_selector.io_write(local.fileno, buffer, 4, 32)).to eq(einval)
+    end
+
+    it "returns 0 when offset equals the buffer capacity, without sending" do
+      local, peer = stream_pair
+      buffer = IO::Buffer.new(16)
+      buffer.set_string("full buffer here")
+
+      expect(v4_selector.io_write(local.fileno, buffer, 4, 16)).to eq(0)
+      peer.nonblock = true
+      expect { peer.read_nonblock(1) }.to raise_error(IO::WaitReadable)
+    end
+
+    it "writes to a regular file" do
+      file = Tempfile.new("carbon_v4")
+      buffer = IO::Buffer.new(5)
+      buffer.set_string("hello")
+
+      expect(v4_selector.io_write(file.fileno, buffer, 5, 0)).to eq(5)
+      file.rewind
+      expect(file.read).to eq("hello")
+    ensure
+      file.close!
     end
 
     it "returns -EAGAIN immediately when the kernel send buffer is full" do
