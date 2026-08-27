@@ -5,6 +5,14 @@ const rb = @import("rb");
 const Value = rb.Value;
 const crb = rb.crb;
 const bindings = @import("bindings.zig");
+const build_options = @import("build_options");
+
+// Ruby development builds dlsym this before Init_* (RUBY_DLN_CHECK_ABI);
+// mkmf-built extensions inherit it from ruby/internal/abi.h. Stable
+// releases never look it up, where this returns 0 harmlessly.
+export fn ruby_abi_version() c_ulonglong {
+    return build_options.ruby_abi_version;
+}
 
 // See bindings.zig for the rationale on re-declaring this with an
 // `*const anyopaque` slot.

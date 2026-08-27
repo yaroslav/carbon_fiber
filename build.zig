@@ -40,6 +40,18 @@ pub fn build(b: *std.Build) void {
         return;
     };
 
+    // Ruby development builds carry an ABI counter in ruby_version
+    // ("4.1.0+4") and their dln refuses extensions that don't export a
+    // matching ruby_abi_version(). Stable releases have no suffix and
+    // never look the symbol up.
+    const abi_version: u64 = blk: {
+        const plus = std.mem.lastIndexOfScalar(u8, ruby_config.ruby_version, '+') orelse break :blk 0;
+        break :blk std.fmt.parseInt(u64, ruby_config.ruby_version[plus + 1 ..], 10) catch 0;
+    };
+    const build_options = b.addOptions();
+    build_options.addOption(u64, "ruby_abi_version", abi_version);
+    fibers_module.addOptions("build_options", build_options);
+
     const fibers_ext = ruby.addExtension(
         b,
         &ruby_config,
