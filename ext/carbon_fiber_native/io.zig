@@ -74,6 +74,15 @@ pub inline fn isEnotsock(errno_value: isize) bool {
     return errno_value == @intFromEnum(std.posix.E.NOTSOCK);
 }
 
+/// Whether `fd` refers to a regular file. Returns false on any fstat
+/// failure so callers fall through to the read/write attempt, which
+/// surfaces the real errno.
+pub fn isRegularFile(fd: std.posix.fd_t) bool {
+    var stat: std.c.Stat = undefined;
+    if (std.c.fstat(fd, &stat) != 0) return false;
+    return std.c.S.ISREG(stat.mode);
+}
+
 /// Non-blocking read(2) for non-socket fds (pipes, files). Returns
 /// bytes read or negated errno.
 pub fn readOnce(fd: std.posix.fd_t, buf: []u8) isize {

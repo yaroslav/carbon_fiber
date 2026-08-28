@@ -857,8 +857,13 @@ pub const Selector = struct {
         const rc = io.recvOnce(fd, (ptr + offset)[0..read_len]);
         if (rc >= 0) return support.intValue(rc);
         if (io.isEnotsock(-rc)) {
-            // Non-socket fd (pipe, file): read(2) once. -EAGAIN goes back to
-            // Ruby directly; pipes are pollable, so io_wait handles the rest.
+            // Regular files ignore O_NONBLOCK: read(2) can block on disk
+            // I/O while this thread holds the GVL, stalling every fiber.
+            // Defer them to the Ruby background-thread fallback.
+            if (io.isRegularFile(fd)) return Value.nil;
+            // Other non-sockets (pipes, FIFOs, ttys) honor O_NONBLOCK:
+            // read(2) once, -EAGAIN goes back to Ruby directly, and
+            // io_wait composes the retry since they are pollable.
             return support.intValue(io.readOnce(fd, (ptr + offset)[0..read_len]));
         }
         return support.intValue(rc);
@@ -1024,6 +1029,8 @@ pub const Selector = struct {
         const rc = io.sendOnce(fd, (ptr + offset)[0..write_len]);
         if (rc >= 0) return support.intValue(rc);
         if (io.isEnotsock(-rc)) {
+            // See ioReadV4: regular files can block under the GVL.
+            if (io.isRegularFile(fd)) return Value.nil;
             return support.intValue(io.writeOnce(fd, (ptr + offset)[0..write_len]));
         }
         return support.intValue(rc);

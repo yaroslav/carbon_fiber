@@ -121,24 +121,17 @@ RSpec.describe "native selector v4 contract", :native_only do
       expect(buffer.get_string(0, 2)).to eq("hi")
     end
 
-    it "reads from a regular file" do
+    it "defers regular-file reads to the Ruby fallback" do
+      # read(2) on a regular file ignores O_NONBLOCK and can block on disk
+      # I/O while the extension holds the GVL, stalling every fiber; the
+      # native path hands files to the background-thread fallback instead.
       file = Tempfile.new("carbon_v4")
       file.write("file contents")
       file.flush
       file.rewind
       buffer = IO::Buffer.new(16)
 
-      expect(v4_selector.io_read(file.fileno, buffer, 13, 0)).to eq(13)
-      expect(buffer.get_string(0, 13)).to eq("file contents")
-    ensure
-      file.close!
-    end
-
-    it "returns 0 at end of a regular file" do
-      file = Tempfile.new("carbon_v4")
-      buffer = IO::Buffer.new(16)
-
-      expect(v4_selector.io_read(file.fileno, buffer, 16, 0)).to eq(0)
+      expect(v4_selector.io_read(file.fileno, buffer, 13, 0)).to be_nil
     ensure
       file.close!
     end
@@ -237,14 +230,12 @@ RSpec.describe "native selector v4 contract", :native_only do
       expect { peer.read_nonblock(1) }.to raise_error(IO::WaitReadable)
     end
 
-    it "writes to a regular file" do
+    it "defers regular-file writes to the Ruby fallback" do
       file = Tempfile.new("carbon_v4")
       buffer = IO::Buffer.new(5)
       buffer.set_string("hello")
 
-      expect(v4_selector.io_write(file.fileno, buffer, 5, 0)).to eq(5)
-      file.rewind
-      expect(file.read).to eq("hello")
+      expect(v4_selector.io_write(file.fileno, buffer, 5, 0)).to be_nil
     ensure
       file.close!
     end

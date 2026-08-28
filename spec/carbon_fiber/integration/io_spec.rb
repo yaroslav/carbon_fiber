@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "tempfile"
 
 RSpec.describe CarbonFiber::Scheduler, :unix_only do
   include_context "with scheduler"
@@ -110,6 +111,33 @@ RSpec.describe CarbonFiber::Scheduler, :unix_only do
       rescue
         nil
       end
+    end
+  end
+
+  describe "reading and writing regular files" do
+    it "reads a file inside a fiber" do
+      file = Tempfile.new("carbon_io")
+      file.write("regular file contents")
+      file.flush
+      content = nil
+
+      Fiber.schedule { content = File.read(file.path) }
+
+      scheduler.run
+      expect(content).to eq("regular file contents")
+    ensure
+      file.close!
+    end
+
+    it "writes a file inside a fiber" do
+      file = Tempfile.new("carbon_io")
+
+      Fiber.schedule { File.write(file.path, "written from a fiber") }
+
+      scheduler.run
+      expect(File.read(file.path)).to eq("written from a fiber")
+    ensure
+      file.close!
     end
   end
 end
