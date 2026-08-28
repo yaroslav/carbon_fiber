@@ -5,6 +5,7 @@
 // Please note that Zig code is heavily AI-assisted.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// Non-blocking recv on a pre-computed buffer slice. Returns
 /// bytes read (≥0) or negated errno.
@@ -74,10 +75,18 @@ pub inline fn isEnotsock(errno_value: isize) bool {
     return errno_value == @intFromEnum(std.posix.E.NOTSOCK);
 }
 
-/// Whether `fd` refers to a regular file. Returns false on any fstat
+/// Whether `fd` refers to a regular file. Returns false on any stat
 /// failure so callers fall through to the read/write attempt, which
-/// surfaces the real errno.
+/// surfaces the real errno. std.c.fstat is target-gated off on Linux
+/// (glibc symbol history), so Linux uses the statx syscall directly.
 pub fn isRegularFile(fd: std.posix.fd_t) bool {
+    if (builtin.os.tag == .linux) {
+        const linux = std.os.linux;
+        var stx: linux.Statx = undefined;
+        const rc = linux.statx(fd, "", linux.AT.EMPTY_PATH, .{ .TYPE = true }, &stx);
+        if (linux.errno(rc) != .SUCCESS) return false;
+        return linux.S.ISREG(stx.mode);
+    }
     var stat: std.c.Stat = undefined;
     if (std.c.fstat(fd, &stat) != 0) return false;
     return std.c.S.ISREG(stat.mode);
