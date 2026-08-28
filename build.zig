@@ -40,18 +40,11 @@ pub fn build(b: *std.Build) void {
         return;
     };
 
-    // Ruby development builds carry an ABI counter in ruby_version
-    // ("4.1.0+4") and their dln refuses extensions that don't export a
-    // matching ruby_abi_version(). Stable releases have no suffix and
-    // never look the symbol up.
-    const abi_version: u64 = blk: {
-        const plus = std.mem.lastIndexOfScalar(u8, ruby_config.ruby_version, '+') orelse break :blk 0;
-        break :blk std.fmt.parseInt(u64, ruby_config.ruby_version[plus + 1 ..], 10) catch 0;
-    };
     // Ruby 4.1 grew rb_data_type_t.function (handle_weak_references plus a
     // larger reserved array), shifting parent/data/flags. The pre-generated
     // crb bindings carry the older layout, so the extension picks the
-    // matching one at build time from the target Ruby's version.
+    // matching one at build time from the target Ruby's version; abi.c
+    // verifies the pick against the real headers at load time.
     const ruby_4_1_typed_data: bool = blk: {
         var it = std.mem.splitScalar(u8, ruby_config.ruby_version, '.');
         const major = std.fmt.parseInt(u32, it.first(), 10) catch break :blk false;
@@ -61,9 +54,16 @@ pub fn build(b: *std.Build) void {
     };
 
     const build_options = b.addOptions();
-    build_options.addOption(u64, "ruby_abi_version", abi_version);
     build_options.addOption(bool, "ruby_4_1_typed_data", ruby_4_1_typed_data);
     fibers_module.addOptions("build_options", build_options);
+
+    // Compiled against the target Ruby's real headers: provides the weak
+    // ruby_abi_version() for development Rubies and the rb_data_type_t
+    // layout facts that main.zig verifies at load time.
+    fibers_module.addCSourceFile(.{
+        .file = b.path("ext/carbon_fiber_native/abi.c"),
+        .flags = &.{},
+    });
 
     const fibers_ext = ruby.addExtension(
         b,

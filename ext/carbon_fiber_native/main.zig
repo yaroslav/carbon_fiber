@@ -5,13 +5,41 @@ const rb = @import("rb");
 const Value = rb.Value;
 const crb = rb.crb;
 const bindings = @import("bindings.zig");
-const build_options = @import("build_options");
+const Selector = @import("selector.zig").Selector;
 
-// Ruby development builds dlsym this before Init_* (RUBY_DLN_CHECK_ABI);
-// mkmf-built extensions inherit it from ruby/internal/abi.h. Stable
-// releases never look it up, where this returns 0 harmlessly.
-export fn ruby_abi_version() c_ulonglong {
-    return build_options.ruby_abi_version;
+// Layout facts from abi.c, compiled against the target Ruby's real headers.
+extern fn carbon_fiber_rb_data_type_sizeof() usize;
+extern fn carbon_fiber_rb_data_type_offsetof_dmark() usize;
+extern fn carbon_fiber_rb_data_type_offsetof_dfree() usize;
+extern fn carbon_fiber_rb_data_type_offsetof_dsize() usize;
+extern fn carbon_fiber_rb_data_type_offsetof_dcompact() usize;
+extern fn carbon_fiber_rb_data_type_offsetof_parent() usize;
+extern fn carbon_fiber_rb_data_type_offsetof_data() usize;
+extern fn carbon_fiber_rb_data_type_offsetof_flags() usize;
+
+// The Zig-side rb_data_type_t layout comes from pre-generated bindings
+// plus a build-time version switch; neither is derived from the headers
+// this Ruby was built with. Comparing against abi.c's header-derived
+// facts turns a stale or mis-selected layout into a clean LoadError
+// instead of undefined behavior.
+fn verifyDataTypeLayout() void {
+    const Layout = @TypeOf(Selector.RubyType.rb_data_type);
+    const Function = @FieldType(Layout, "function");
+    const function_base = @offsetOf(Layout, "function");
+
+    const matches =
+        carbon_fiber_rb_data_type_sizeof() == @sizeOf(Layout) and
+        carbon_fiber_rb_data_type_offsetof_dmark() == function_base + @offsetOf(Function, "dmark") and
+        carbon_fiber_rb_data_type_offsetof_dfree() == function_base + @offsetOf(Function, "dfree") and
+        carbon_fiber_rb_data_type_offsetof_dsize() == function_base + @offsetOf(Function, "dsize") and
+        carbon_fiber_rb_data_type_offsetof_dcompact() == function_base + @offsetOf(Function, "dcompact") and
+        carbon_fiber_rb_data_type_offsetof_parent() == @offsetOf(Layout, "parent") and
+        carbon_fiber_rb_data_type_offsetof_data() == @offsetOf(Layout, "data") and
+        carbon_fiber_rb_data_type_offsetof_flags() == @offsetOf(Layout, "flags");
+
+    if (!matches) {
+        crb.rb_raise(crb.rb_eLoadError, "carbon_fiber: rb_data_type_t layout mismatch between the extension's bindings and this Ruby's headers; rebuild against bindings generated for this Ruby version");
+    }
 }
 
 // See bindings.zig for the rationale on re-declaring this with an
@@ -37,6 +65,7 @@ fn backendWrapper(_: crb.VALUE) callconv(.c) crb.VALUE {
 
 export fn Init_carbon_fiber_native() void {
     rb.init();
+    verifyDataTypeLayout();
 
     const top = crb.rb_define_module("CarbonFiber");
     const native = crb.rb_define_module_under(top, "Native");
