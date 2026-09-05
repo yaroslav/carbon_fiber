@@ -86,6 +86,10 @@ RSpec.describe "CarbonFiber::Scheduler inside a Ractor" do
     # once, with the pure-Ruby selector as much as the native one; Ruby 4.0
     # reworked Ractor threading and runs this reliably.
     skip "several Ractors with schedulers need Ruby 4.0 or later" if RUBY_VERSION < "4.0"
+    # On Windows a garbage collection inside a non-main Ractor pauses for
+    # several seconds while the main Ractor waits in Ractor#value (Ruby's VM
+    # barrier), so 400 rounds take many minutes there.
+    skip "garbage collection in a non-main Ractor pauses for seconds on Windows" if Gem.win_platform?
 
     expected = RactorSchedulerWorkload.run(1).first
     ractors = Array.new(4) { Ractor.new { RactorSchedulerWorkload.run(100) } }
