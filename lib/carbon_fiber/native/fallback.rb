@@ -104,7 +104,7 @@ module CarbonFiber
       # Run one event loop iteration.
       def select(timeout = nil)
         flush_ready
-        return 0 unless pending?
+        return 0 unless pending? || parked?
 
         deadline = next_wait_deadline(timeout)
 
@@ -126,6 +126,19 @@ module CarbonFiber
 
         collect_expired_timers
         flush_ready
+      end
+
+      # True while a fiber is parked in block() or do_io_wait. Nothing in the
+      # ready list, timers, or read waits refers to it, so pending? is false,
+      # yet select must sleep on the condition variable rather than return:
+      # the wake-up comes from another thread (a background operation's
+      # resume, an unblock, or wakeup), and returning at once makes
+      # Scheduler#run spin with the GVL held. On the main Ractor the timer
+      # thread preempts that spin; inside a non-main Ractor Ruby's M:N
+      # scheduler does not, and the thread that would wake the fiber never
+      # runs.
+      def parked?
+        @mutex.synchronize { @blocked_fibers.any? }
       end
 
       # Mirrors `Selector#kernel_sleep` on the native side so
