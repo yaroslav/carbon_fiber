@@ -94,4 +94,60 @@ RSpec.describe "CarbonFiber::Scheduler inside a Ractor" do
     expect(results.map(&:size)).to eq([100, 100, 100, 100])
     expect(results.flatten(1)).to all(eq(expected))
   end
+
+  # Resolv cannot run inside a worker Ractor, so address_resolve switches to
+  # the platform resolver on a background thread there.
+  it "resolves hostnames from a worker Ractor" do
+    addresses = RactorSchedulerWorkload.result_of(Ractor.new do
+      scheduler = CarbonFiber::Scheduler.new
+      Fiber.set_scheduler(scheduler)
+      resolved = nil
+      Fiber.schedule { resolved = scheduler.address_resolve("localhost") }
+      Fiber.set_scheduler(nil)
+      resolved
+    end)
+
+    expect(addresses).to include("127.0.0.1").or include("::1")
+  end
+
+  it "returns no addresses for an unknown host from a worker Ractor" do
+    addresses = RactorSchedulerWorkload.result_of(Ractor.new do
+      scheduler = CarbonFiber::Scheduler.new
+      Fiber.set_scheduler(scheduler)
+      resolved = nil
+      Fiber.schedule { resolved = scheduler.address_resolve("nonexistent.invalid") }
+      Fiber.set_scheduler(nil)
+      resolved
+    end)
+
+    expect(addresses).to eq([])
+  end
+
+  it "connects by hostname from a worker Ractor fiber" do
+    server = TCPServer.new("127.0.0.1", 0)
+    port = server.addr[1]
+    echo = Thread.new do
+      client = server.accept
+      client.write(client.read(4))
+      client.close
+    end
+
+    reply = RactorSchedulerWorkload.result_of(Ractor.new(port) do |port|
+      scheduler = CarbonFiber::Scheduler.new
+      Fiber.set_scheduler(scheduler)
+      received = nil
+      Fiber.schedule do
+        socket = TCPSocket.new("localhost", port)
+        socket.write("ping")
+        received = socket.read(4)
+        socket.close
+      end
+      Fiber.set_scheduler(nil)
+      received
+    end)
+
+    echo.join
+    server.close
+    expect(reply).to eq("ping")
+  end
 end
