@@ -33,6 +33,7 @@ jobs:
           - { os: ubuntu-latest,  ruby: "head", fallback: true, experimental: true }
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     continue-on-error: ${{ matrix.experimental || false }}
     env:
       BUNDLE_VERSION: ${{ matrix.experimental && 'system' || 'lockfile' }}

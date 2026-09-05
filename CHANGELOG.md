@@ -1,3 +1,7 @@
+## [Unreleased]
+
+- Fix the pure-Ruby fallback loop burning CPU while a fiber waits on a background thread; inside a non-main Ractor that spin starved the thread it was waiting for and hung the loop.
+
 ## [0.2.0] - 2026-09-05
 
 - Work inside Ractors: the native extension is declared Ractor-safe, so each Ractor can install its own `CarbonFiber::Scheduler` (several at once need Ruby 4.0 or later). See the README for the supported messaging pattern.
