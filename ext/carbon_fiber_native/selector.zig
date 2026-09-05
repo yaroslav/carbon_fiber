@@ -1169,6 +1169,24 @@ pub const Selector = struct {
         try self.ready_entries.append(self.allocator, .{ .kind = kind, .fiber = fiber, .payload = payload });
     }
 
+    // Completion callbacks run inside waitWithoutGVL with the GVL released,
+    // where a collection on another thread runs selectorMark concurrently.
+    // A callback that moves a fiber out of descriptor or process-wait state
+    // into ready_entries takes the cross-thread mutex for the hand-off, and
+    // selectorMark holds it for its whole scan, so the collector never reads
+    // ready_entries mid-reallocation and never finds the fiber in neither
+    // place. Phase-1 polling holds the GVL and skips the lock; `blocked` is
+    // written by this thread only, so a monotonic load suffices.
+    inline fn lockForMark(self: *Self) bool {
+        if (!self.blocked.load(.monotonic)) return false;
+        self.cross_thread_mutex.lock();
+        return true;
+    }
+
+    inline fn unlockForMark(self: *Self, locked: bool) void {
+        if (locked) self.cross_thread_mutex.unlock();
+    }
+
     // Called from non-scheduler threads (e.g. Scheduler#unblock,
     // Scheduler#resume).
     // Uses a mutex-protected list plus an atomic flag.
@@ -1572,6 +1590,12 @@ pub const Selector = struct {
 
 fn selectorMark(data: ?*anyopaque) callconv(.c) void {
     const self: *Selector = @ptrCast(@alignCast(data.?));
+    // Completion callbacks may be moving fibers between the structures
+    // scanned here with the GVL released (see lockForMark); hold their
+    // mutex for the whole scan. One uncontended lock per collection.
+    self.cross_thread_mutex.lock();
+    defer self.cross_thread_mutex.unlock();
+
     support.markValue(self.loop_fiber);
     support.markValue(self.scheduler_thread);
 
@@ -1580,18 +1604,9 @@ fn selectorMark(data: ?*anyopaque) callconv(.c) void {
         support.markValue(entry.payload);
     }
 
-    // Mirror drainCrossThread's fast path: the pending flag is set with
-    // release ordering after every cross-thread append, so an acquire load
-    // observing `false` here means no other thread has anything to mark.
-    // Skipping the mutex avoids the lock+unlock per GC cycle for the common
-    // single-threaded scheduler case.
-    if (self.cross_thread_pending.load(.acquire)) {
-        self.cross_thread_mutex.lock();
-        defer self.cross_thread_mutex.unlock();
-        for (self.cross_thread_entries.items) |entry| {
-            support.markValue(entry.fiber);
-            support.markValue(entry.payload);
-        }
+    for (self.cross_thread_entries.items) |entry| {
+        support.markValue(entry.fiber);
+        support.markValue(entry.payload);
     }
 
     self.timers.mark();
@@ -1648,15 +1663,20 @@ fn completePoll(descriptor: ?*Descriptor, completion: *xev.Completion, ok: bool)
     const state = &desc.poll[@intFromEnum(dir)];
     state.armed = false;
 
-    if (dir == .read) desc.cancelReadTimeout();
+    {
+        const locked = self.lockForMark();
+        defer self.unlockForMark(locked);
 
-    if (state.waiter != crb.Qnil) {
-        const fiber = state.waiter;
-        state.waiter = crb.Qnil;
-        if (self.active_waiters > 0) self.active_waiters -= 1;
-        const event: i16 = if (dir == .read) READABLE else WRITABLE;
-        const payload = if (ok) support.intValue(event).asRaw() else Value.from(false).asRaw();
-        self.enqueue(.resume_fiber, fiber, payload) catch {};
+        if (dir == .read) desc.cancelReadTimeout();
+
+        if (state.waiter != crb.Qnil) {
+            const fiber = state.waiter;
+            state.waiter = crb.Qnil;
+            if (self.active_waiters > 0) self.active_waiters -= 1;
+            const event: i16 = if (dir == .read) READABLE else WRITABLE;
+            const payload = if (ok) support.intValue(event).asRaw() else Value.from(false).asRaw();
+            self.enqueue(.resume_fiber, fiber, payload) catch {};
+        }
     }
 
     if (comptime xev.backend == .kqueue) {
@@ -1720,6 +1740,9 @@ fn ioRecvCallback(
         error.Unexpected => -@as(isize, @intFromEnum(std.posix.E.IO)),
     };
 
+    const locked = self.lockForMark();
+    defer self.unlockForMark(locked);
+
     if (state.waiter != crb.Qnil) {
         const fiber = state.waiter;
         state.waiter = crb.Qnil;
@@ -1739,6 +1762,9 @@ fn processWaitCallback(
 ) xev.CallbackAction {
     const process_wait = wait orelse return .disarm;
     process_wait.ready = if (result) |_| true else |_| false;
+
+    const locked = process_wait.selector.lockForMark();
+    defer process_wait.selector.unlockForMark(locked);
 
     if (process_wait.fiber != crb.Qnil and !process_wait.cancelled) {
         const fiber = process_wait.fiber;
