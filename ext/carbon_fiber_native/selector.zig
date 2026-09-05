@@ -1611,6 +1611,14 @@ fn selectorMark(data: ?*anyopaque) callconv(.c) void {
 
     self.timers.mark();
 
+    // Fibers parked in block() without a timeout are referenced by nothing
+    // else the collector can see: a Queue, Mutex, or ConditionVariable
+    // waiter lives on the parked fiber's own stack, and a fiber reached
+    // by transfer has no prev link. Without this root a parked fiber is
+    // collected, and the eventual unblock hands the selector a freed one.
+    var blocked = self.blocked_fibers.keyIterator();
+    while (blocked.next()) |fiber| support.markValue(fiber.*);
+
     var it = self.descriptors.iterator();
     while (it.next()) |entry| {
         const descriptor = entry.value_ptr.*;
