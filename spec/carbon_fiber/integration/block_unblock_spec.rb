@@ -108,6 +108,30 @@ RSpec.describe CarbonFiber::Scheduler do
       end
     end
 
+    describe "a fiber parked without a timeout" do
+      def churn(depth)
+        depth.zero? ? 0 : churn(depth - 1) + 1
+      end
+
+      # Nothing but the selector references a fiber waiting in Queue#pop, so
+      # the selector must mark it, or the collector frees it and the eventual
+      # unblock hands over a dead fiber.
+      it "survives a garbage collection while waiting on a queue" do
+        queue = Thread::Queue.new
+        popped = nil
+
+        Fiber.schedule { popped = queue.pop }
+        scheduler.run_once(0) # dispatches the fiber, which parks in block()
+        churn(200)
+        3.times { GC.start }
+        churn(200)
+
+        queue.push(:item)
+        scheduler.run
+        expect(popped).to eq(:item)
+      end
+    end
+
     describe "block with a timeout" do
       it "resumes the fiber after the deadline without an explicit unblock" do
         timed_out_at = nil

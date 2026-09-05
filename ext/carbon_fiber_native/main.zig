@@ -64,6 +64,13 @@ fn backendWrapper(_: crb.VALUE) callconv(.c) crb.VALUE {
 }
 
 export fn Init_carbon_fiber_native() void {
+    // Ruby marks every method an extension defines during Init as unsafe to
+    // call from non-main Ractors unless the extension declares otherwise
+    // before defining anything. Nothing here is process-global: every VALUE
+    // lives inside a Selector instance, which Ruby confines to the Ractor
+    // that created it, so each Ractor installs its own scheduler. Must stay
+    // the first statement of Init.
+    crb.rb_ext_ractor_safe(true);
     rb.init();
     verifyDataTypeLayout();
 

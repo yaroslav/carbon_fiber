@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- Work inside Ractors: the native extension is declared Ractor-safe, so each Ractor can install its own `CarbonFiber::Scheduler` (several at once need Ruby 4.0 or later). See the README for the supported messaging pattern.
+- Resolve hostnames in non-main Ractors through the platform resolver on a background thread, since Resolv cannot run there.
+- Fix fibers parked in `Queue#pop`, `Mutex#lock`, or any `block` without a timeout being garbage collected while waiting; once unblocked this raised `TypeError: wrong argument type false (expected fiber)` or hung the loop.
+- Fix a race between garbage collection and I/O completions arriving while the loop waits with the GVL released.
 - Support the Ruby 4.1 buffered I/O scheduler contract: `io_read`/`io_write` take `(io, buffer, offset, length)` and perform a single transfer; Ruby 3.4 through 4.0 keep the legacy behavior. (Thanks to [Samuel Williams](https://github.com/samuel-williams-shopify)).
 - The native extension now loads on Ruby development builds: a C shim compiled against the target headers provides the `ruby_abi_version` their ABI check requires.
 - Match Ruby 4.1's updated `rb_data_type_t` layout when registering the native selector, and verify the layout against the target Ruby's headers when the extension loads.

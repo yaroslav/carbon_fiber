@@ -240,6 +240,47 @@ end
 
 ---
 
+### Inside Ractors
+
+A fiber scheduler belongs to a thread, and every Ractor runs its own threads, so each Ractor installs its own `CarbonFiber::Scheduler`. Construct it inside the Ractor that runs it; never share one between Ractors. Running several such Ractors at once needs Ruby 4.0 or later; Ruby 3.4 aborts or hangs under that load, with the pure-Ruby selector as well. Every hook works there as on the main Ractor, including DNS: `address_resolve` uses Resolv on the main Ractor and the platform resolver on a background thread elsewhere, because Resolv keeps state that Ractor isolation forbids.
+
+`Ractor.receive` (and `Ractor::Port#receive`) block the calling thread without going through the scheduler, so a worker must not wait for messages on the thread that runs its event loop: every fiber in the Ractor would stall until the next message. Receive on a dedicated thread instead and hand messages to a scheduled fiber through a `Thread::Queue`. A push from the receiving thread wakes the parked fiber through the scheduler's cross-thread `unblock` path, the same path background operations use.
+
+```ruby
+worker = Ractor.new do
+  scheduler = CarbonFiber::Scheduler.new
+  Fiber.set_scheduler(scheduler)
+
+  jobs = Thread::Queue.new
+  receiver = Thread.new do
+    while (message = Ractor.receive) != :stop
+      jobs.push(message)
+    end
+    jobs.close
+  end
+
+  results = []
+  Fiber.schedule do
+    loop do
+      job = jobs.pop or break # a fresh binding per job for the fiber below
+      Fiber.schedule { results << handle(job) } # any I/O the scheduler intercepts
+    end
+  end
+
+  Fiber.set_scheduler(nil) # runs the loop until the queue closes and every job is done
+  receiver.join
+  results
+end
+
+inputs.each { |job| worker.send(job) }
+worker.send(:stop)
+worker.value # Ractor#take on Ruby 3.4
+```
+
+A pipe works too: the receiving thread writes a byte per message and the dispatching fiber reads it before popping the queue, so the wake-up arrives through `io_wait`. The queue alone is simpler and is what `spec/carbon_fiber/ractor_spec.rb` exercises.
+
+---
+
 ## How It Works
 
 The scheduler has two layers:

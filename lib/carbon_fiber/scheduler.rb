@@ -2,7 +2,6 @@
 
 # Please note that this code is heavily AI-assisted.
 
-require "resolv"
 require "socket"
 require "timeout"
 require_relative "io_contract"
@@ -51,6 +50,11 @@ module CarbonFiber
       io_contract_v4: CarbonFiber.io_contract_v4?)
       @root_fiber = root_fiber
       @scheduler_thread = Thread.current
+      @main_ractor = !defined?(Ractor) || Ractor.current == Ractor.main
+      # Resolv keeps state Ractor isolation forbids, and only the main
+      # Ractor resolves through it (see #address_resolve), so load it here
+      # rather than at require time; a worker Ractor never loads it.
+      require "resolv" if @main_ractor
       @selector = selector.new(root_fiber)
       @selector.io_contract_v4 = io_contract_v4
       @active_fibers = 0
@@ -333,14 +337,28 @@ module CarbonFiber
       end
     end
 
-    # Resolve a hostname to addresses via Resolv.
+    # Resolve a hostname to addresses.
+    #
+    # The main Ractor uses Resolv: it speaks DNS over sockets the scheduler
+    # already multiplexes, so lookups never block the loop. Resolv keeps
+    # class-level state that Ractor isolation forbids, so a scheduler running
+    # in another Ractor asks the platform resolver instead. That call blocks
+    # its thread, and from a scheduled fiber it would re-enter this very
+    # hook, so it runs on a background thread like process_wait does.
+    # Unknown hosts yield an empty list on both paths.
     # @param hostname [String]
     # @return [Array<String>]
     def address_resolve(hostname)
       if hostname.include?("%")
         hostname = hostname.split("%", 2).first
       end
-      Resolv.getaddresses(hostname)
+      return Resolv.getaddresses(hostname) if @main_ractor
+
+      await_background_operation do
+        Addrinfo.getaddrinfo(hostname, nil, nil, :STREAM).map(&:ip_address)
+      rescue SocketError
+        []
+      end
     end
 
     # Run an arbitrary callable on a background thread.
