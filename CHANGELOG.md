@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.2.0] - 2026-09-05
 
 - Work inside Ractors: the native extension is declared Ractor-safe, so each Ractor can install its own `CarbonFiber::Scheduler` (several at once need Ruby 4.0 or later). See the README for the supported messaging pattern.
 - Resolve hostnames in non-main Ractors through the platform resolver on a background thread, since Resolv cannot run there.
