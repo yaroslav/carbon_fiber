@@ -2,6 +2,7 @@
 
 # Please note that this code is heavily AI-assisted.
 
+require_relative "io_contract"
 require_relative "native"
 
 module CarbonFiber
@@ -26,8 +27,12 @@ module CarbonFiber
       attr_reader :loop
 
       # @param loop [Fiber] the Async event loop fiber
-      def initialize(loop)
-        super
+      # @param io_contract_v4 [Boolean] use the Ruby 4.1+ single-transfer
+      #   contract in the native I/O paths (defaults to what the running
+      #   Ruby speaks; override only for testing)
+      def initialize(loop, io_contract_v4: CarbonFiber.io_contract_v4?)
+        super(loop)
+        self.io_contract_v4 = io_contract_v4
         @loop = loop
         @idle_duration = 0.0
 
@@ -117,30 +122,78 @@ module CarbonFiber
       EAGAIN = -Errno::EAGAIN::Errno
       EWOULDBLOCK = -Errno::EWOULDBLOCK::Errno
 
+      # Legacy contract (Ruby 3.4 through 4.0): length before offset,
+      # minimum-progress semantics.
       # @param fiber [Fiber]
       # @param io [IO]
       # @param buffer [IO::Buffer]
       # @param length [Integer]
       # @param offset [Integer]
       # @return [Integer] bytes read, or negative errno
-      def io_read(fiber, io, buffer, length, offset = 0)
+      def io_read_v3(fiber, io, buffer, length, offset = 0)
         result = native_io_read(io.fileno, buffer, length, offset)
         return result unless result.nil?
 
         ruby_io_read(fiber, io, buffer, length, offset)
       end
 
+      # Ruby 4.1+ contract: offset before length, single transfer. One
+      # nonblocking attempt; short results and -EAGAIN are returned
+      # directly, and the caller composes retries via io_wait.
+      # @param fiber [Fiber]
+      # @param io [IO]
+      # @param buffer [IO::Buffer]
+      # @param offset [Integer]
+      # @param length [Integer] maximum bytes for this transfer
+      # @return [Integer] bytes read, or negative errno
+      def io_read_v4(fiber, io, buffer, offset, length)
+        return 0 if length.zero?
+
+        result = native_io_read(io.fileno, buffer, length, offset)
+        return result unless result.nil?
+
+        ruby_io_read_v4(io, buffer, offset, length)
+      end
+
+      # Legacy contract (Ruby 3.4 through 4.0): length before offset,
+      # minimum-progress semantics.
       # @param fiber [Fiber]
       # @param io [IO]
       # @param buffer [IO::Buffer]
       # @param length [Integer]
       # @param offset [Integer]
       # @return [Integer] bytes written, or negative errno
-      def io_write(fiber, io, buffer, length, offset = 0)
+      def io_write_v3(fiber, io, buffer, length, offset = 0)
         result = native_io_write(io.fileno, buffer, length, offset)
         return result unless result.nil?
 
         ruby_io_write(fiber, io, buffer, length, offset)
+      end
+
+      # Ruby 4.1+ contract: offset before length, single transfer.
+      # @param fiber [Fiber]
+      # @param io [IO]
+      # @param buffer [IO::Buffer]
+      # @param offset [Integer]
+      # @param length [Integer] maximum bytes for this transfer
+      # @return [Integer] bytes written, or negative errno
+      def io_write_v4(fiber, io, buffer, offset, length)
+        return 0 if length.zero?
+
+        result = native_io_write(io.fileno, buffer, length, offset)
+        return result unless result.nil?
+
+        ruby_io_write_v4(io, buffer, offset, length)
+      end
+
+      # The public hook names follow the contract of the running Ruby;
+      # both generations stay defined for direct testing.
+      if CarbonFiber.io_contract_v4?
+        alias_method :io_read, :io_read_v4
+        alias_method :io_write, :io_write_v4
+      else
+        alias_method :io_read, :io_read_v3
+        alias_method :io_write, :io_write_v3
       end
 
       # Cancel pending waiters on the descriptor.
@@ -227,6 +280,22 @@ module CarbonFiber
         end
 
         total
+      end
+
+      # Ruby-level single-transfer io_read/io_write for non-socket fds under
+      # the Ruby 4.1+ contract: one nonblocking attempt, -EAGAIN and short
+      # results returned directly. No io_wait, no minimum-progress loop;
+      # Ruby's own read loop composes retries.
+      def ruby_io_read_v4(io, buffer, offset, length)
+        IO::Event::Selector.nonblock(io) do
+          Fiber.blocking { buffer.read(io, offset, length) }
+        end
+      end
+
+      def ruby_io_write_v4(io, buffer, offset, length)
+        IO::Event::Selector.nonblock(io) do
+          Fiber.blocking { buffer.write(io, offset, length) }
+        end
       end
 
       def fallback_io_wait(io, events)

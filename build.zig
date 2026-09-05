@@ -40,6 +40,31 @@ pub fn build(b: *std.Build) void {
         return;
     };
 
+    // Ruby 4.1 grew rb_data_type_t.function (handle_weak_references plus a
+    // larger reserved array), shifting parent/data/flags. The pre-generated
+    // crb bindings carry the older layout, so the extension picks the
+    // matching one at build time from the target Ruby's version; abi.c
+    // verifies the pick against the real headers at load time.
+    const ruby_4_1_typed_data: bool = blk: {
+        var it = std.mem.splitScalar(u8, ruby_config.ruby_version, '.');
+        const major = std.fmt.parseInt(u32, it.first(), 10) catch break :blk false;
+        const minor_str = it.next() orelse break :blk false;
+        const minor = std.fmt.parseInt(u32, minor_str, 10) catch break :blk false;
+        break :blk major > 4 or (major == 4 and minor >= 1);
+    };
+
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "ruby_4_1_typed_data", ruby_4_1_typed_data);
+    fibers_module.addOptions("build_options", build_options);
+
+    // Compiled against the target Ruby's real headers: provides the weak
+    // ruby_abi_version() for development Rubies and the rb_data_type_t
+    // layout facts that main.zig verifies at load time.
+    fibers_module.addCSourceFile(.{
+        .file = b.path("ext/carbon_fiber_native/abi.c"),
+        .flags = &.{},
+    });
+
     const fibers_ext = ruby.addExtension(
         b,
         &ruby_config,

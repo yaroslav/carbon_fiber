@@ -25,8 +25,17 @@ jobs:
           - { os: macos-latest,   ruby: "3.4", fallback: true }
           - { os: macos-latest,   ruby: "4.0", fallback: true }
           - { os: windows-latest, ruby: "4.0", fallback: true }
+          # ruby-head: validates the Ruby 4.1+ single-transfer scheduler
+          # contract against the real hook caller and IO::Buffer argument
+          # order. Advisory until 4.1 ships (continue-on-error).
+          - { os: ubuntu-latest,  ruby: "head", experimental: true }
+          - { os: macos-latest,   ruby: "head", experimental: true }
+          - { os: ubuntu-latest,  ruby: "head", fallback: true, experimental: true }
 
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental || false }}
+    env:
+      BUNDLE_VERSION: ${{ matrix.experimental && 'system' || 'lockfile' }}
     steps:
       - uses: actions/checkout@v6
 

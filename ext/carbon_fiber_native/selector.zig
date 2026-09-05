@@ -22,6 +22,7 @@
 const std = @import("std");
 const xev = @import("xev");
 const rb = @import("rb");
+const build_options = @import("build_options");
 const Error = rb.Error;
 const Value = rb.Value;
 const crb = rb.crb;
@@ -201,6 +202,12 @@ pub const Selector = struct {
     probe_misses: [256]u8 = std.mem.zeroes([256]u8),
 
     initialized: bool = false,
+    // Ruby 4.1+ (RUBY_IO_BUFFER_VERSION >= 3) single-transfer contract for
+    // ioRead/ioWrite: one nonblocking attempt, short results and -EAGAIN
+    // returned directly, zero length transfers nothing. Set from Ruby via
+    // `io_contract_v4=` because the generated bindings expose no scheduler
+    // version macro. Defaults to the legacy minimum-progress contract.
+    io_contract_v4: bool = false,
     // Set by deadlineTimerCallback so waitWithoutGVL can distinguish a genuine
     // deadline wakeup from a spurious GC-preemption notify.
     deadline_fired: bool = false,
@@ -222,7 +229,27 @@ pub const Selector = struct {
     descriptor_cache: [DESCRIPTOR_CACHE_SIZE]?*Descriptor = [_]?*Descriptor{null} ** DESCRIPTOR_CACHE_SIZE,
 
     pub const RubyType = struct {
-        pub const rb_data_type: crb.rb_data_type_t = .{
+        // Ruby 4.1's rb_data_type_t.function gained handle_weak_references
+        // and a larger reserved array, shifting parent/data/flags. Passing
+        // the older crb layout makes 4.1 read garbage flags (and reject the
+        // wrap as "embeddable"), so the matching layout is selected at
+        // build time via build_options.ruby_4_1_typed_data.
+        const DataTypeV41 = extern struct {
+            wrap_struct_name: [*c]const u8,
+            function: extern struct {
+                dmark: crb.RUBY_DATA_FUNC,
+                dfree: crb.RUBY_DATA_FUNC,
+                dsize: ?*const fn (?*const anyopaque) callconv(.c) usize,
+                dcompact: crb.RUBY_DATA_FUNC,
+                handle_weak_references: crb.RUBY_DATA_FUNC,
+                reserved: [7]?*anyopaque,
+            },
+            parent: ?*const anyopaque,
+            data: ?*anyopaque,
+            flags: crb.VALUE,
+        };
+
+        pub const rb_data_type = if (build_options.ruby_4_1_typed_data) DataTypeV41{
             .wrap_struct_name = "CarbonFiber::Native::Selector",
             .function = .{
                 .dmark = &selectorMark,
@@ -231,6 +258,20 @@ pub const Selector = struct {
                 // No dcompact: markValue uses rb_gc_mark_maybe which pins
                 // the marked VALUEs in place, so compaction never moves
                 // anything we hold and we don't need a relocation pass.
+                .dcompact = null,
+                .handle_weak_references = null,
+                .reserved = .{null} ** 7,
+            },
+            .parent = null,
+            .data = null,
+            .flags = crb.RUBY_TYPED_FREE_IMMEDIATELY,
+        } else crb.rb_data_type_t{
+            .wrap_struct_name = "CarbonFiber::Native::Selector",
+            .function = .{
+                .dmark = &selectorMark,
+                .dfree = &selectorFree,
+                .dsize = null,
+                // No dcompact: see above.
                 .dcompact = null,
                 .reserved = .{null},
             },
@@ -242,11 +283,11 @@ pub const Selector = struct {
         pub fn alloc_func(rb_class: crb.VALUE) callconv(.c) crb.VALUE {
             const selector = std.heap.c_allocator.create(Self) catch @panic("failed to allocate selector");
             selector.* = .{};
-            return crb.rb_data_typed_object_wrap(rb_class, selector, &rb_data_type);
+            return crb.rb_data_typed_object_wrap(rb_class, selector, @ptrCast(&rb_data_type));
         }
 
         pub inline fn unwrap(rb_value: crb.VALUE) *Self {
-            return @ptrCast(@alignCast(crb.rb_check_typeddata(rb_value, &rb_data_type)));
+            return @ptrCast(@alignCast(crb.rb_check_typeddata(rb_value, @ptrCast(&rb_data_type))));
         }
     };
 
@@ -570,6 +611,14 @@ pub const Selector = struct {
             return Value.from(true);
         }
 
+        /// Select the Ruby 4.1+ single-transfer contract for io_read/io_write.
+        /// Exposed to Ruby as `io_contract_v4=`; the Ruby wrapper decides from
+        /// `IO::Buffer::VERSION` at load time.
+        pub fn set_io_contract_v4(self: *Self, enabled_val: Value) Value {
+            self.io_contract_v4 = enabled_val.isTruthy();
+            return enabled_val;
+        }
+
         /// Read from a socket fd into an IO::Buffer.
         /// Returns bytes read or nil for non-sockets.
         pub fn io_read(self: *Self, fd_val: Value, buffer_val: Value, length_val: Value, offset_val: Value) Value {
@@ -785,7 +834,44 @@ pub const Selector = struct {
         return raw != crb.Qfalse and raw != crb.Qnil;
     }
 
+    // Ruby 4.1+ single-transfer read: one nonblocking attempt, short results
+    // and -EAGAIN returned directly. Ruby's own read loop composes retries
+    // via io_wait, so this never suspends and never returns nil. The probe
+    // skip and drainRecv machinery stay out: skipping would return -EAGAIN
+    // without the attempt the contract requires, and draining is extra
+    // speculative syscalls the caller no longer expects.
+    fn ioReadV4(self: *Self, fd: std.posix.fd_t, buffer: Value, length: usize, offset: usize) Value {
+        _ = self;
+        if (length == 0) return support.intValue(0);
+
+        var base: ?*anyopaque = null;
+        var size: usize = 0;
+        support.rb_io_buffer_get_bytes_for_writing(buffer.asRaw(), &base, &size);
+
+        if (offset > size) return support.intValue(-@as(isize, @intFromEnum(std.posix.E.INVAL)));
+        const available = size - offset;
+        if (available == 0) return support.intValue(0);
+        const read_len = @min(available, length);
+        const ptr: [*]u8 = @ptrCast(base.?);
+
+        const rc = io.recvOnce(fd, (ptr + offset)[0..read_len]);
+        if (rc >= 0) return support.intValue(rc);
+        if (io.isEnotsock(-rc)) {
+            // Regular files ignore O_NONBLOCK: read(2) can block on disk
+            // I/O while this thread holds the GVL, stalling every fiber.
+            // Defer them to the Ruby background-thread fallback.
+            if (io.isRegularFile(fd)) return Value.nil;
+            // Other non-sockets (pipes, FIFOs, ttys) honor O_NONBLOCK:
+            // read(2) once, -EAGAIN goes back to Ruby directly, and
+            // io_wait composes the retry since they are pollable.
+            return support.intValue(io.readOnce(fd, (ptr + offset)[0..read_len]));
+        }
+        return support.intValue(rc);
+    }
+
     fn ioRead(self: *Self, fd: std.posix.fd_t, buffer: Value, length: usize, offset: usize) !Value {
+        if (self.io_contract_v4) return self.ioReadV4(fd, buffer, length, offset);
+
         // Extract buffer pointer once: reused by both fast path and uring slow path
         var base: ?*anyopaque = null;
         var size: usize = 0;
@@ -925,7 +1011,34 @@ pub const Selector = struct {
         return transfer_result;
     }
 
+    // Ruby 4.1+ single-transfer write: mirror of ioReadV4.
+    fn ioWriteV4(self: *Self, fd: std.posix.fd_t, buffer: Value, length: usize, offset: usize) Value {
+        _ = self;
+        if (length == 0) return support.intValue(0);
+
+        var base: ?*const anyopaque = null;
+        var size: usize = 0;
+        support.rb_io_buffer_get_bytes_for_reading(buffer.asRaw(), &base, &size);
+
+        if (offset > size) return support.intValue(-@as(isize, @intFromEnum(std.posix.E.INVAL)));
+        const available = size - offset;
+        if (available == 0) return support.intValue(0);
+        const write_len = @min(available, length);
+        const ptr: [*]const u8 = @ptrCast(base.?);
+
+        const rc = io.sendOnce(fd, (ptr + offset)[0..write_len]);
+        if (rc >= 0) return support.intValue(rc);
+        if (io.isEnotsock(-rc)) {
+            // See ioReadV4: regular files can block under the GVL.
+            if (io.isRegularFile(fd)) return Value.nil;
+            return support.intValue(io.writeOnce(fd, (ptr + offset)[0..write_len]));
+        }
+        return support.intValue(rc);
+    }
+
     fn ioWrite(self: *Self, fd: std.posix.fd_t, buffer: Value, length: usize, offset: usize) !Value {
+        if (self.io_contract_v4) return self.ioWriteV4(fd, buffer, length, offset);
+
         // Extract buffer pointer once for send + drain
         var base: ?*const anyopaque = null;
         var size: usize = 0;

@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- Support the Ruby 4.1 buffered I/O scheduler contract: `io_read`/`io_write` take `(io, buffer, offset, length)` and perform a single transfer; Ruby 3.4 through 4.0 keep the legacy behavior. (Thanks to [Samuel Williams](https://github.com/samuel-williams-shopify)).
+- The native extension now loads on Ruby development builds: a C shim compiled against the target headers provides the `ruby_abi_version` their ABI check requires.
+- Match Ruby 4.1's updated `rb_data_type_t` layout when registering the native selector, and verify the layout against the target Ruby's headers when the extension loads.
+- Under the Ruby 4.1 contract, regular-file reads and writes run on the background I/O path instead of risking blocking the scheduler thread.
 - `Scheduler#io_close` and `Async::Selector#io_close` now take a file descriptor (Integer), matching Ruby's Fiber::Scheduler protocol. (Thanks to [Samuel Williams](https://github.com/samuel-williams-shopify)).
 
 ## [0.1.3] - 2026-05-08
