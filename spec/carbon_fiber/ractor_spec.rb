@@ -150,4 +150,42 @@ RSpec.describe "CarbonFiber::Scheduler inside a Ractor" do
     server.close
     expect(reply).to eq("ping")
   end
+
+  # Ractor.receive blocks its thread outside the scheduler, so a worker
+  # receives on a dedicated thread and hands messages to a scheduled fiber
+  # through a Thread::Queue; each push wakes the loop via cross-thread unblock.
+  it "dispatches Ractor messages to the loop from a receiving thread" do
+    worker = Ractor.new do
+      scheduler = CarbonFiber::Scheduler.new
+      Fiber.set_scheduler(scheduler)
+
+      jobs = Thread::Queue.new
+      receiver = Thread.new do
+        while (message = Ractor.receive) != :stop
+          jobs.push(message)
+        end
+        jobs.close
+      end
+
+      results = []
+      Fiber.schedule do
+        loop do
+          job = jobs.pop or break
+          Fiber.schedule do
+            sleep 0.001
+            results << job * 2
+          end
+        end
+      end
+
+      Fiber.set_scheduler(nil)
+      receiver.join
+      results.sort
+    end
+
+    5.times { |i| worker.send(i) }
+    worker.send(:stop)
+
+    expect(RactorSchedulerWorkload.result_of(worker)).to eq([0, 2, 4, 6, 8])
+  end
 end
