@@ -82,7 +82,7 @@ pub fn build(b: *std.Build) void {
 
     // Enable full LTO for release builds to allow cross-module inlining
     // between the event loop, I/O helpers, and Ruby binding layers.
-    if (optimize != .Debug and !is_macos) fibers_ext.lto = .full;
+    if (optimize != .debug and !is_macos) fibers_ext.lto = .full;
 
     const allocator = b.allocator;
     const dest_path = std.fmt.allocPrint(

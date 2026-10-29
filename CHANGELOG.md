@@ -1,11 +1,13 @@
-## [Unreleased]
+## [0.2.1] - 2026-10-29
 
-- Fix the pure-Ruby fallback loop burning CPU while a fiber waits on a background thread; inside a non-main Ractor that spin starved the thread it was waiting for and hung the loop.
+- Update to Zig 0.17.0; update libxev and zig.rb to the latest versions.
+- Fix closing an IO while a fiber waits on it under Ruby 4.1 (head), which raised `TypeError` instead of `IOError`.
 
 ## [0.2.0] - 2026-09-05
 
 - Work inside Ractors: the native extension is declared Ractor-safe, so each Ractor can install its own `CarbonFiber::Scheduler` (several at once need Ruby 4.0 or later). See the README for the supported messaging pattern.
 - Resolve hostnames in non-main Ractors through the platform resolver on a background thread, since Resolv cannot run there.
+- Fix the pure-Ruby fallback loop burning CPU while a fiber waits on a background thread; inside a non-main Ractor that spin starved the thread it was waiting for and hung the loop.
 - Fix fibers parked in `Queue#pop`, `Mutex#lock`, or any `block` without a timeout being garbage collected while waiting; once unblocked this raised `TypeError: wrong argument type false (expected fiber)` or hung the loop.
 - Fix a race between garbage collection and I/O completions arriving while the loop waits with the GVL released.
 - Support the Ruby 4.1 buffered I/O scheduler contract: `io_read`/`io_write` take `(io, buffer, offset, length)` and perform a single transfer; Ruby 3.4 through 4.0 keep the legacy behavior. (Thanks to [Samuel Williams](https://github.com/samuel-williams-shopify)).

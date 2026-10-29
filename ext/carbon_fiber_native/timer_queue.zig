@@ -11,7 +11,9 @@ const rb = @import("rb");
 const crb = rb.crb;
 const support = @import("support.zig");
 
-pub const ReadyKind = enum(u8) { resume_fiber, raise };
+// `interrupt` carries a Fiber::Scheduler::InterruptTarget, not a fiber;
+// see Selector.raise.
+pub const ReadyKind = enum(u8) { resume_fiber, raise, interrupt };
 
 pub const TimerEntry = struct {
     deadline: f64,

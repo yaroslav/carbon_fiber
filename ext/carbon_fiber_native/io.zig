@@ -17,7 +17,7 @@ pub inline fn recvOnce(fd: std.posix.fd_t, buf: []u8) isize {
         if (rc >= 0) return @intCast(rc);
         const err = std.posix.errno(rc);
         if (err == .INTR) continue;
-        return -@as(isize, @intCast(@intFromEnum(err)));
+        return -@as(isize, @intCast(@backingInt(err)));
     }
 }
 
@@ -29,7 +29,7 @@ pub inline fn sendOnce(fd: std.posix.fd_t, buf: []const u8) isize {
         if (rc >= 0) return @intCast(rc);
         const err = std.posix.errno(rc);
         if (err == .INTR) continue;
-        return -@as(isize, @intCast(@intFromEnum(err)));
+        return -@as(isize, @intCast(@backingInt(err)));
     }
 }
 
@@ -63,16 +63,16 @@ pub fn drainSend(fd: std.posix.fd_t, buf: [*]const u8, total_len: usize, initial
 /// Checks both EAGAIN and EWOULDBLOCK (which are the same on Linux but
 /// are distinct constants on some other platforms).
 pub inline fn wouldBlockErrno(errno_value: isize) bool {
-    const again = @intFromEnum(std.posix.E.AGAIN);
+    const again = @backingInt(std.posix.E.AGAIN);
     const would_block = if (@hasField(std.posix.E, "WOULDBLOCK"))
-        @intFromEnum(@field(std.posix.E, "WOULDBLOCK"))
+        @backingInt(@field(std.posix.E, "WOULDBLOCK"))
     else
         again;
     return errno_value == again or errno_value == would_block;
 }
 
 pub inline fn isEnotsock(errno_value: isize) bool {
-    return errno_value == @intFromEnum(std.posix.E.NOTSOCK);
+    return errno_value == @backingInt(std.posix.E.NOTSOCK);
 }
 
 /// Whether `fd` refers to a regular file. Returns false on any stat
@@ -100,7 +100,7 @@ pub fn readOnce(fd: std.posix.fd_t, buf: []u8) isize {
         if (rc >= 0) return @intCast(rc);
         const err = std.posix.errno(rc);
         if (err == .INTR) continue;
-        return -@as(isize, @intCast(@intFromEnum(err)));
+        return -@as(isize, @intCast(@backingInt(err)));
     }
 }
 
@@ -112,7 +112,7 @@ pub fn writeOnce(fd: std.posix.fd_t, buf: []const u8) isize {
         if (rc >= 0) return @intCast(rc);
         const err = std.posix.errno(rc);
         if (err == .INTR) continue;
-        return -@as(isize, @intCast(@intFromEnum(err)));
+        return -@as(isize, @intCast(@backingInt(err)));
     }
 }
 

@@ -22,6 +22,7 @@ pub extern fn rb_thread_current() crb.VALUE;
 pub extern fn rb_fiber_alive_p(fiber: crb.VALUE) crb.VALUE;
 pub extern fn rb_fiber_transfer(fiber: crb.VALUE, argc: c_int, argv: ?[*]const crb.VALUE) crb.VALUE;
 pub extern fn rb_fiber_raise(fiber: crb.VALUE, argc: c_int, argv: ?[*]const crb.VALUE) crb.VALUE;
+pub extern fn rb_obj_is_fiber(value: crb.VALUE) crb.VALUE;
 pub extern fn rb_io_descriptor(io: crb.VALUE) c_int;
 
 pub fn monotonicSeconds() f64 {
@@ -37,7 +38,7 @@ pub fn monotonicSeconds() f64 {
 // rather than going through zig.rb's Fixnum.fromInt to keep the hot path as
 // short as possible and to avoid generating extra code paths during LTO.
 pub inline fn intValue(value: anytype) Value {
-    const FixInt = std.meta.Int(.signed, @typeInfo(c_long).int.bits - 1);
+    const FixInt = @Int(.signed, @typeInfo(c_long).int.bits - 1);
     const v: FixInt = @intCast(value);
     const tagged: crb.VALUE = @bitCast((@as(isize, v) << 1) | 1);
     return Value.fromRaw(tagged);
@@ -59,6 +60,10 @@ pub fn busySpinUntil(deadline: f64) void {
 
 pub inline fn fiberAlive(fiber: crb.VALUE) bool {
     return rb_fiber_alive_p(fiber) == crb.Qtrue;
+}
+
+pub inline fn isFiber(value: crb.VALUE) bool {
+    return rb_obj_is_fiber(value) == crb.Qtrue;
 }
 
 // Marks a queue-resident VALUE using Ruby's conservative marker.

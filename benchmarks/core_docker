@@ -33,4 +33,4 @@ docker run --rm \
   -e RUBYOPT="${BENCH_RUBYOPT:---yjit}" \
   -e BENCH_TIMEOUT \
   carbon-fiber-bench \
-  bash -c 'bundle install --quiet && zig build -Doptimize=ReleaseFast && ruby ./benchmarks/bench --setup "$@" && ruby ./benchmarks/bench "$@"' -- "$@"
+  bash -c 'bundle install --quiet && zig build -Doptimize=fast && ruby ./benchmarks/bench --setup "$@" && ruby ./benchmarks/bench "$@"' -- "$@"

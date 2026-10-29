@@ -370,7 +370,8 @@ module CarbonFiber
     end
 
     # Deliver an exception to a fiber from another fiber.
-    # @param fiber [Fiber]
+    # @param fiber [Fiber, Object] the fiber, or on Ruby 4.1+ an
+    #   operation-scoped Fiber::Scheduler::InterruptTarget for IO interrupts
     # @param exception [Exception]
     def fiber_interrupt(fiber, exception)
       @selector.raise(fiber, exception)

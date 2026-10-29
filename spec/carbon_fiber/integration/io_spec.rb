@@ -114,6 +114,67 @@ RSpec.describe CarbonFiber::Scheduler, :unix_only do
     end
   end
 
+  # Ruby 4.1 (ruby/ruby#18793) hands fiber_interrupt an operation-scoped
+  # Fiber::Scheduler::InterruptTarget instead of the fiber. This stand-in has
+  # the same interface, so the path is covered on every Ruby.
+  describe "an IO interrupt delivered through an operation proxy" do
+    let(:proxy_class) do
+      Struct.new(:fiber, :active) do
+        def alive?
+          active && fiber.alive?
+        end
+
+        def raise(exception)
+          fiber.raise(exception) if active
+        end
+      end
+    end
+
+    it "raises the exception in the interrupted fiber" do
+      parked = nil
+      raised = nil
+
+      # The timeout turns a lost interrupt into a failure instead of a hang.
+      Fiber.schedule do
+        parked = Fiber.current
+        Fiber.scheduler.block(Object.new, 2)
+      rescue IOError => e
+        raised = e
+      end
+
+      Fiber.schedule do
+        sleep 0 until parked
+        Fiber.scheduler.fiber_interrupt(proxy_class.new(parked, true), IOError.new("stream closed"))
+      end
+
+      scheduler.run
+      expect(raised).to be_a(IOError)
+    end
+
+    it "does nothing once the interrupted operation has finished" do
+      blocker = Object.new
+      parked = nil
+      outcome = nil
+
+      Fiber.schedule do
+        parked = Fiber.current
+        Fiber.scheduler.block(blocker, nil)
+        outcome = :resumed
+      rescue IOError
+        outcome = :interrupted
+      end
+
+      Fiber.schedule do
+        sleep 0 until parked
+        Fiber.scheduler.fiber_interrupt(proxy_class.new(parked, false), IOError.new("stream closed"))
+        Fiber.scheduler.unblock(blocker, parked)
+      end
+
+      scheduler.run
+      expect(outcome).to eq(:resumed)
+    end
+  end
+
   describe "reading and writing regular files" do
     it "reads a file inside a fiber" do
       file = Tempfile.new("carbon_io")
