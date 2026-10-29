@@ -367,6 +367,16 @@ pub const Selector = struct {
         pub fn raise(self: *Self, fiber_val: Value, exception_val: Value) Value {
             self.ensureInitialized();
             const fiber = fiber_val.asRaw();
+            // Ruby 4.1 hands fiber_interrupt an operation-scoped
+            // Fiber::Scheduler::InterruptTarget for IO interrupts instead of
+            // the fiber. It never owns a block() timer, and flushReady
+            // delivers through its own alive?/raise, which do nothing once
+            // the interrupted operation has finished.
+            if (!support.isFiber(fiber)) {
+                self.enqueue(.interrupt, fiber, exception_val.asRaw()) catch
+                    Error.raiseRuntimeError("Failed to enqueue interrupt");
+                return fiber_val;
+            }
             // Cancel any pending block() timeout for this fiber. If we don't do
             // this, the longjmp that delivers the exception bypasses the cancel
             // call in block(), leaving a dangling timer that
@@ -1388,7 +1398,7 @@ pub const Selector = struct {
             const entry = self.ready_entries.items[self.ready_head];
             self.ready_head += 1;
 
-            if (!support.fiberAlive(entry.fiber)) continue;
+            if (entry.kind != .interrupt and !support.fiberAlive(entry.fiber)) continue;
 
             var argv = [_]crb.VALUE{entry.payload};
             switch (entry.kind) {
@@ -1420,6 +1430,7 @@ pub const Selector = struct {
                 .raise => {
                     _ = support.rb_fiber_raise(entry.fiber, 1, &argv);
                 },
+                .interrupt => deliverInterrupt(entry.fiber, entry.payload),
             }
 
             dispatched += 1;
@@ -1816,6 +1827,15 @@ fn waitWithoutGVL(data: ?*anyopaque) callconv(.c) ?*anyopaque {
 fn waitUnblock(data: ?*anyopaque) callconv(.c) void {
     const self: *Selector = @ptrCast(@alignCast(data.?));
     self.async_handle.notify() catch {};
+}
+
+// Delivers an IO interrupt through a Fiber::Scheduler::InterruptTarget using
+// only its alive? and raise, the same calls the fallback selector makes.
+fn deliverInterrupt(target: crb.VALUE, exception: crb.VALUE) void {
+    const alive = crb.rb_funcallv(target, crb.rb_intern("alive?"), 0, null);
+    if (alive == crb.Qfalse or alive == crb.Qnil) return;
+    const argv = [_]crb.VALUE{exception};
+    _ = crb.rb_funcallv(target, crb.rb_intern("raise"), 1, &argv);
 }
 
 fn floatFromValue(value: Value, fallback: ?f64) f64 {

@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 - Update to Zig 0.17.0; update libxev and zig.rb to the latest versions.
+- Fix closing an IO while a fiber waits on it under Ruby 4.1 (head), which raised `TypeError` instead of `IOError`.
 
 ## [0.2.0] - 2026-09-05
 
