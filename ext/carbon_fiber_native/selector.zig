@@ -112,7 +112,7 @@ const Descriptor = struct {
     closed: bool = false,
 
     inline fn pollFor(self: *Descriptor, comptime dir: Direction) *PollState {
-        return &self.poll[@intFromEnum(dir)];
+        return &self.poll[@backingInt(dir)];
     }
 
     fn anyPollArmed(self: *const Descriptor) bool {
@@ -226,7 +226,7 @@ pub const Selector = struct {
     // ioRecvUring call. Kept consistent with `descriptors` via
     // ensureDescriptor and ioClose.  Placed at the end of the struct (large
     // 2 KiB field) so it doesn't push hot-path fields into colder cache lines.
-    descriptor_cache: [DESCRIPTOR_CACHE_SIZE]?*Descriptor = [_]?*Descriptor{null} ** DESCRIPTOR_CACHE_SIZE,
+    descriptor_cache: [DESCRIPTOR_CACHE_SIZE]?*Descriptor = @splat(null),
 
     pub const RubyType = struct {
         // Ruby 4.1's rb_data_type_t.function gained handle_weak_references
@@ -260,7 +260,7 @@ pub const Selector = struct {
                 // anything we hold and we don't need a relocation pass.
                 .dcompact = null,
                 .handle_weak_references = null,
-                .reserved = .{null} ** 7,
+                .reserved = @splat(null),
             },
             .parent = null,
             .data = null,
@@ -737,7 +737,7 @@ pub const Selector = struct {
         self.loop_fiber = crb.Qnil;
         self.ready_head = 0;
         self.active_waiters = 0;
-        self.descriptor_cache = [_]?*Descriptor{null} ** DESCRIPTOR_CACHE_SIZE;
+        self.descriptor_cache = @splat(null);
         self.initialized = false;
     }
 
@@ -848,7 +848,7 @@ pub const Selector = struct {
         var size: usize = 0;
         support.rb_io_buffer_get_bytes_for_writing(buffer.asRaw(), &base, &size);
 
-        if (offset > size) return support.intValue(-@as(isize, @intFromEnum(std.posix.E.INVAL)));
+        if (offset > size) return support.intValue(-@as(isize, @backingInt(std.posix.E.INVAL)));
         const available = size - offset;
         if (available == 0) return support.intValue(0);
         const read_len = @min(available, length);
@@ -877,7 +877,7 @@ pub const Selector = struct {
         var size: usize = 0;
         support.rb_io_buffer_get_bytes_for_writing(buffer.asRaw(), &base, &size);
 
-        if (offset > size) return support.intValue(-@as(isize, @intFromEnum(std.posix.E.INVAL)));
+        if (offset > size) return support.intValue(-@as(isize, @backingInt(std.posix.E.INVAL)));
         const available = size - offset;
         if (available == 0) return support.intValue(0);
         const read_len = if (length == 0) available else @min(available, length);
@@ -968,7 +968,7 @@ pub const Selector = struct {
         while (true) {
             const wait_ready = try self.waitForPoll(fiber, fd, .read, null);
             if (wait_ready == null) return Value.nil;
-            if (!wait_ready.?) return support.intValue(-@as(isize, @intFromEnum(std.posix.E.AGAIN)));
+            if (!wait_ready.?) return support.intValue(-@as(isize, @backingInt(std.posix.E.AGAIN)));
 
             const rc = io.recvOnce(fd, buf[0..read_len]);
             if (rc > 0) return support.intValue(io.drainRecv(fd, buf, read_len, @intCast(rc)));
@@ -1020,7 +1020,7 @@ pub const Selector = struct {
         var size: usize = 0;
         support.rb_io_buffer_get_bytes_for_reading(buffer.asRaw(), &base, &size);
 
-        if (offset > size) return support.intValue(-@as(isize, @intFromEnum(std.posix.E.INVAL)));
+        if (offset > size) return support.intValue(-@as(isize, @backingInt(std.posix.E.INVAL)));
         const available = size - offset;
         if (available == 0) return support.intValue(0);
         const write_len = @min(available, length);
@@ -1044,7 +1044,7 @@ pub const Selector = struct {
         var size: usize = 0;
         support.rb_io_buffer_get_bytes_for_reading(buffer.asRaw(), &base, &size);
 
-        if (offset > size) return support.intValue(-@as(isize, @intFromEnum(std.posix.E.INVAL)));
+        if (offset > size) return support.intValue(-@as(isize, @backingInt(std.posix.E.INVAL)));
         const available = size - offset;
         if (available == 0) return support.intValue(0);
         const write_len = if (length == 0) available else @min(available, length);
@@ -1668,7 +1668,7 @@ fn completePoll(descriptor: ?*Descriptor, completion: *xev.Completion, ok: bool)
 
     // Determine direction from which completion was used
     const dir: Direction = if (completion == &desc.poll[0].completion) .read else .write;
-    const state = &desc.poll[@intFromEnum(dir)];
+    const state = &desc.poll[@backingInt(dir)];
     state.armed = false;
 
     {
@@ -1737,15 +1737,15 @@ fn ioRecvCallback(
 ) xev.CallbackAction {
     const desc: *Descriptor = if (descriptor_raw) |raw| @ptrCast(@alignCast(raw)) else return .disarm;
     const self = desc.selector;
-    const state = &desc.poll[@intFromEnum(Direction.read)];
+    const state = &desc.poll[@backingInt(Direction.read)];
     state.armed = false;
 
     // Convert result to isize: positive = bytes read, 0 = EOF, negative = errno
     const io_result: isize = if (result.recv) |n| @intCast(n) else |err| switch (err) {
         error.EOF => 0,
-        error.ConnectionResetByPeer => -@as(isize, @intFromEnum(std.posix.E.CONNRESET)),
-        error.Canceled => -@as(isize, @intFromEnum(std.posix.E.CANCELED)),
-        error.Unexpected => -@as(isize, @intFromEnum(std.posix.E.IO)),
+        error.ConnectionResetByPeer => -@as(isize, @backingInt(std.posix.E.CONNRESET)),
+        error.Canceled => -@as(isize, @backingInt(std.posix.E.CANCELED)),
+        error.Unexpected => -@as(isize, @backingInt(std.posix.E.IO)),
     };
 
     const locked = self.lockForMark();

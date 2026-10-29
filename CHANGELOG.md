@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 - Fix the pure-Ruby fallback loop burning CPU while a fiber waits on a background thread; inside a non-main Ractor that spin starved the thread it was waiting for and hung the loop.
+- Update to Zig 0.17.0; update libxev and zig.rb to the latest versions.
 
 ## [0.2.0] - 2026-09-05
 

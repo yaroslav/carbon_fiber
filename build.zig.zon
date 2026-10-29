@@ -1,16 +1,16 @@
 .{
     .name = .carbon_fiber,
     .version = "0.2.0",
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .fingerprint = 0xa77e58bde51c90b2,
     .dependencies = .{
         .zig_rb = .{
-            .url = "https://github.com/furunkel/zig.rb/archive/239820962c633dfd97d298a2677518db32f1980e.tar.gz",
-            .hash = "zig_rb-0.0.0-dYaqXUQlDQB-CO_JCQsjcSFgYhNdTFDHhMMEsurw6v3v",
+            .url = "https://github.com/furunkel/zig.rb/archive/a674fb004e3b26c5959f830b5ef75bdce0b15bc3.tar.gz",
+            .hash = "zig_rb-0.0.0-dYaqXWgoDQDDkyQLvZ6izbucobh4QX8_T86TYAPc8egD",
         },
         .libxev = .{
-            .url = "https://github.com/mitchellh/libxev/archive/9ce8e8e6ff89e583258a7f8e7adeeeaeae8611bf.tar.gz",
-            .hash = "libxev-0.0.0-86vtcwIRFADbH4hk-EjROXxlrKIRPQdA41XiTSytYO-F",
+            .url = "https://github.com/mitchellh/libxev/archive/451a2bc03644c2b70fb28a808313d12989bfa8e3.tar.gz",
+            .hash = "libxev-0.0.0-86vtc8QQFACz0sVc7U-VDiDIgH-XfBuEY5JpABLjHNpn",
         },
     },
     .paths = .{

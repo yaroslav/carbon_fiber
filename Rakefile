@@ -22,7 +22,7 @@ end
 
 desc "Compile the Zig native extension (also syncs version)"
 task compile: :sync_version do
-  sh "zig", "build", "-Doptimize=ReleaseFast"
+  sh "zig", "build", "-Doptimize=fast"
   fix_macos_install_names if RUBY_PLATFORM.include?("darwin")
 end
 
@@ -74,7 +74,7 @@ def fix_macos_install_names
   end
 end
 
-ZIG_VERSION = "0.16.0"
+ZIG_VERSION = "0.17.0"
 
 # Ruby versions to compile for. Full version must exactly match the directory
 # name inside the RCD image: docker run --rm <image> ls /usr/local/rake-compiler/ruby/x86_64-linux-gnu/

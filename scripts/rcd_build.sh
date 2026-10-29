@@ -8,12 +8,12 @@
 #   TARGET_TRIPLE       e.g. "x86_64-linux-gnu"  (empty = native)
 #
 # Optional:
-#   ZIG_VERSION         default: 0.15.2
+#   ZIG_VERSION         default: 0.17.0
 #   RCD_BASE            default: /usr/local/rake-compiler/ruby
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ZIG_VERSION="${ZIG_VERSION:-0.15.2}"
+ZIG_VERSION="${ZIG_VERSION:-0.17.0}"
 RCD_BASE="${RCD_BASE:-/usr/local/rake-compiler/ruby}"
 
 echo "==> rcd_build: platform=${RCD_PLATFORM} ruby=${RUBY_FULL_VERSION} target=${TARGET_TRIPLE:-native}"
@@ -73,7 +73,7 @@ echo "==> RUBY_HDRDIR=${RUBY_HDRDIR}"
 
 # ── Build ──────────────────────────────────────────────────────────────────
 cd "${ROOT_DIR}"
-ZIG_ARGS=(-Doptimize=ReleaseFast)
+ZIG_ARGS=(-Doptimize=fast)
 [[ -n "${TARGET_TRIPLE:-}" ]] && ZIG_ARGS+=(-Dtarget="${TARGET_TRIPLE}")
 zig build "${ZIG_ARGS[@]}"
 

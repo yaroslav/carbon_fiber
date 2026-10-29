@@ -37,7 +37,7 @@ pub fn monotonicSeconds() f64 {
 // rather than going through zig.rb's Fixnum.fromInt to keep the hot path as
 // short as possible and to avoid generating extra code paths during LTO.
 pub inline fn intValue(value: anytype) Value {
-    const FixInt = std.meta.Int(.signed, @typeInfo(c_long).int.bits - 1);
+    const FixInt = @Int(.signed, @typeInfo(c_long).int.bits - 1);
     const v: FixInt = @intCast(value);
     const tagged: crb.VALUE = @bitCast((@as(isize, v) << 1) | 1);
     return Value.fromRaw(tagged);
